@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   Download, 
   Link as LinkIcon, 
@@ -16,7 +16,9 @@ import {
   ArrowRight,
   ShieldCheck,
   Zap,
-  HardDrive
+  HardDrive,
+  Timer,
+  Activity
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -31,6 +33,10 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
+  // Estado da Barra de Progresso em Tempo Real
+  const [progressData, setProgressData] = useState(null);
+  const pollingRef = useRef(null);
+
   // Busca as informações e formatos disponíveis do vídeo
   const handleFetchInfo = async (e) => {
     if (e) e.preventDefault();
@@ -40,6 +46,7 @@ export default function App() {
     setErrorMessage('');
     setSuccessMessage('');
     setVideoData(null);
+    setProgressData(null);
 
     try {
       const response = await fetch(`${API_BASE}/info`, {
@@ -61,12 +68,52 @@ export default function App() {
     }
   };
 
-  // Dispara o download da opção selecionada
+  // Dispara o download da opção selecionada com rastreamento de progresso
   const handleDownloadItem = async (item, type) => {
     const itemKey = type === 'video' ? `video_${item.height}` : `audio_${item.bitrate}`;
+    const taskId = 'dl_' + Math.random().toString(36).substring(2, 9);
+    
     setDownloadingKey(itemKey);
     setErrorMessage('');
     setSuccessMessage('');
+
+    // Inicia o card de progresso
+    setProgressData({
+      taskId,
+      quality: item.quality,
+      type,
+      percent: 5,
+      speed: '',
+      eta: 'Calculando...',
+      downloaded: '',
+      total: item.size || '',
+      stage: 'Conectando ao servidor...',
+    });
+
+    // Inicia polling de progresso a cada 600ms
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/progress/${taskId}`);
+        if (res.ok) {
+          const p = await res.json();
+          setProgressData((prev) => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              percent: Math.max(prev.percent, p.percent || 5),
+              speed: p.speed || prev.speed,
+              eta: p.eta || prev.eta,
+              downloaded: p.downloaded || prev.downloaded,
+              total: p.total || prev.total,
+              stage: p.stage || prev.stage,
+            };
+          });
+        }
+      } catch (err) {
+        // Ignora erros transitórios de polling
+      }
+    }, 600);
 
     try {
       const payload = {
@@ -74,6 +121,7 @@ export default function App() {
         type: type,
         height: type === 'video' ? item.height : undefined,
         bitrate: type === 'audio' ? item.bitrate : undefined,
+        taskId: taskId,
       };
 
       const response = await fetch(`${API_BASE}/download`, {
@@ -86,6 +134,15 @@ export default function App() {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || 'Falha ao baixar arquivo.');
       }
+
+      // Parar polling e marcar 100%
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      setProgressData((prev) => prev ? {
+        ...prev,
+        percent: 100,
+        stage: 'Download pronto! Salvando arquivo...',
+        eta: 'Concluído'
+      } : null);
 
       let filename = type === 'audio' ? `${videoData.title}.mp3` : `${videoData.title}.mp4`;
       const disposition = response.headers.get('Content-Disposition');
@@ -105,7 +162,15 @@ export default function App() {
       window.URL.revokeObjectURL(downloadUrl);
 
       setSuccessMessage(`Download de "${item.quality}" concluído com sucesso!`);
+      
+      // Fecha a barra de progresso após 3 segundos
+      setTimeout(() => {
+        setProgressData(null);
+      }, 3500);
+
     } catch (err) {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      setProgressData(null);
       setErrorMessage(err.message || 'Erro durante o download.');
     } finally {
       setDownloadingKey(null);
@@ -116,7 +181,6 @@ export default function App() {
     ? (showAllVideos ? videoData.videos : videoData.videos.slice(0, 5))
     : [];
 
-  // Helper para renderizar badges de qualidade estilo streaming
   const renderQualityBadge = (quality) => {
     const isUltra = quality.includes('4K') || quality.includes('2K');
     const isFHD = quality.includes('1080');
@@ -146,11 +210,9 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#0b0c0e] text-zinc-100 flex flex-col font-sans selection:bg-[#E50914] selection:text-white relative cinema-glow-bg">
       
-      {/* Navbar Superior Estilo Netflix */}
+      {/* Navbar Superior */}
       <header className="border-b border-white/[0.06] bg-[#0b0c0e]/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
-          
-          {/* Logo e Nome */}
           <div className="flex items-center gap-3.5 group cursor-pointer">
             <div className="relative w-11 h-11 rounded-xl overflow-hidden border border-white/10 shadow-lg shadow-black/80 flex items-center justify-center bg-black group-hover:border-red-500/40 transition-all duration-300">
               <img 
@@ -164,7 +226,6 @@ export default function App() {
             </span>
           </div>
 
-          {/* Badges de Destaque no Header */}
           <div className="flex items-center gap-2">
             <div className="hidden md:flex items-center gap-3 text-xs text-zinc-400 font-medium mr-2">
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.03] border border-white/[0.08]">
@@ -178,7 +239,6 @@ export default function App() {
               4K UHD
             </span>
           </div>
-
         </div>
       </header>
 
@@ -261,6 +321,77 @@ export default function App() {
           </div>
         )}
 
+        {/* CARD DE PROGRESSO EM TEMPO REAL ESTILO NETFLIX */}
+        {progressData && (
+          <div className="w-full max-w-2xl mb-6 p-5 sm:p-6 bg-[#181a22] border border-[#E50914]/40 rounded-3xl shadow-2xl shadow-red-950/40 animate-in fade-in slide-in-from-top-3 duration-300 relative overflow-hidden">
+            {/* Background Glow */}
+            <div className="absolute -top-10 -right-10 w-40 h-40 bg-[#E50914]/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            {/* Cabeçalho do Progresso */}
+            <div className="flex items-center justify-between mb-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-[#E50914]/15 border border-[#E50914]/30 flex items-center justify-center text-[#E50914]">
+                  {progressData.percent >= 100 ? (
+                    <CheckCircle className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <Loader2 className="w-4 h-4 animate-spin text-[#E50914]" />
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Baixando em {progressData.quality}</span>
+                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
+                      {progressData.type === 'audio' ? 'MP3' : 'MP4'}
+                    </span>
+                  </h4>
+                  <p className="text-xs text-zinc-400 mt-0.5">{progressData.stage}</p>
+                </div>
+              </div>
+
+              {/* Porcentagem em Destaque */}
+              <div className="text-right">
+                <span className="font-extrabold text-2xl tracking-tight text-white font-mono">
+                  {progressData.percent}%
+                </span>
+              </div>
+            </div>
+
+            {/* Barra de Progresso Animada */}
+            <div className="w-full h-2.5 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/[0.08] mb-3">
+              <div
+                className="h-full bg-gradient-to-r from-red-600 via-[#E50914] to-rose-400 rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(229,9,20,0.8)]"
+                style={{ width: `${Math.max(progressData.percent, 3)}%` }}
+              ></div>
+            </div>
+
+            {/* Metadados: Velocidade, Tempo Restante e Downloaded */}
+            <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 font-medium pt-1">
+              <div className="flex items-center gap-4">
+                {progressData.speed && (
+                  <span className="flex items-center gap-1.5 text-zinc-300">
+                    <Activity className="w-3.5 h-3.5 text-[#E50914]" />
+                    <span>{progressData.speed}</span>
+                  </span>
+                )}
+                {progressData.eta && (
+                  <span className="flex items-center gap-1.5 text-zinc-300">
+                    <Timer className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{progressData.eta}</span>
+                  </span>
+                )}
+              </div>
+
+              <div>
+                {progressData.downloaded && (
+                  <span className="font-mono text-zinc-300">
+                    {progressData.downloaded} {progressData.total ? `/ ${progressData.total}` : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Card do Vídeo e Tabela de Qualidades */}
         {videoData && (
           <div className="w-full max-w-2xl bg-[#13151b] border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl shadow-black/90 animate-in fade-in slide-in-from-bottom-3 duration-300">
@@ -302,7 +433,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Abas Vídeo / Áudio Estilo Netflix */}
+            {/* Abas Vídeo / Áudio */}
             <div className="flex border-b border-white/[0.06] bg-[#0e1015]">
               <button
                 type="button"
@@ -377,7 +508,7 @@ export default function App() {
                                   {isDownloading ? (
                                     <>
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>Baixando...</span>
+                                      <span>Processando...</span>
                                     </>
                                   ) : (
                                     <>
@@ -463,7 +594,7 @@ export default function App() {
                                 {isDownloading ? (
                                   <>
                                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Baixando...</span>
+                                    <span>Processando...</span>
                                   </>
                                 ) : (
                                   <>
@@ -487,7 +618,7 @@ export default function App() {
 
       </main>
 
-      {/* Footer Minimalista Estilo Netflix */}
+      {/* Footer Minimalista */}
       <footer className="border-t border-white/[0.06] py-8 text-center text-xs text-zinc-600">
         <div className="max-w-4xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-zinc-500">

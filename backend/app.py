@@ -5,6 +5,8 @@ import os
 import uuid
 import glob
 import shutil
+import threading
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -14,6 +16,36 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_FOLDER = os.path.join(BASE_DIR, 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 COOKIES_FILE = os.path.join(BASE_DIR, 'cookies.txt')
+
+# Gerenciador thread-safe de progresso dos downloads
+download_progress = {}
+progress_lock = threading.Lock()
+
+def update_progress(task_id, data):
+    if not task_id:
+        return
+    with progress_lock:
+        if task_id not in download_progress:
+            download_progress[task_id] = {
+                'status': 'starting',
+                'percent': 0,
+                'speed': '',
+                'eta': '',
+                'downloaded': '',
+                'total': '',
+                'stage': 'Iniciando download...',
+                'timestamp': time.time()
+            }
+        download_progress[task_id].update(data)
+        download_progress[task_id]['timestamp'] = time.time()
+
+def cleanup_old_progress():
+    """Remove entradas de progresso com mais de 10 minutos."""
+    with progress_lock:
+        now = time.time()
+        to_del = [tid for tid, p in download_progress.items() if now - p.get('timestamp', now) > 600]
+        for tid in to_del:
+            download_progress.pop(tid, None)
 
 def get_ffmpeg_dir():
     """Detecta o diretório do FFmpeg instalado no sistema ou no WinGet."""
@@ -52,7 +84,6 @@ def get_base_ydl_opts():
     if node_path:
         opts['js_runtimes'] = {'node': {'path': node_path}}
 
-    # Se o usuário tiver colocado cookies.txt na pasta backend, usa automaticamente
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts['cookiefile'] = COOKIES_FILE
 
@@ -88,6 +119,22 @@ def home():
         "has_cookies": os.path.exists(COOKIES_FILE)
     })
 
+@app.route('/progress/<task_id>', methods=['GET'])
+def get_progress(task_id):
+    """Retorna o estado e progresso em tempo real do download para a barra de progresso."""
+    cleanup_old_progress()
+    with progress_lock:
+        data = download_progress.get(task_id, {
+            'status': 'starting',
+            'percent': 0,
+            'speed': '',
+            'eta': '',
+            'downloaded': '',
+            'total': '',
+            'stage': 'Iniciando download...'
+        })
+    return jsonify(data)
+
 @app.route('/info', methods=['POST'])
 def video_info():
     data = request.json or {}
@@ -110,7 +157,6 @@ def video_info():
             duration = info.get('duration', 0)
             uploader = info.get('uploader') or info.get('channel', 'Desconhecido')
 
-            # Localizar melhor faixa de áudio para somar estimativa de tamanho
             best_audio_size = 0
             best_audio_tbr = 128
             for f in info.get('formats', []):
@@ -124,7 +170,6 @@ def video_info():
             if best_audio_size == 0 and duration > 0:
                 best_audio_size = int((best_audio_tbr * 1000 / 8) * duration)
 
-            # Mapeamento e agrupamento de qualidades de vídeo
             quality_labels = {
                 2160: ("4K", "Ultra HD"),
                 1440: ("2K", "Quad HD"),
@@ -173,7 +218,6 @@ def video_info():
                 for k in sorted(video_formats_by_height.keys(), reverse=True)
             ]
 
-            # Opções de Áudio (MP3)
             audio_options = [
                 {"quality": "320 kbps", "label": "Qualidade Máxima", "bitrate": "320", "format": "MP3"},
                 {"quality": "192 kbps", "label": "Alta Qualidade", "bitrate": "192", "format": "MP3"},
@@ -219,15 +263,55 @@ def download_video():
     media_type = data.get('type', 'video')
     height = data.get('height')
     bitrate = data.get('bitrate', '192')
+    task_id = data.get('taskId') or str(uuid.uuid4())[:8]
     
     if not url:
         return jsonify({"error": "URL é obrigatória"}), 400
 
-    file_id = str(uuid.uuid4())[:8]
+    file_id = task_id
     output_template = os.path.join(DOWNLOAD_FOLDER, f"%(title)s_{file_id}.%(ext)s")
     ffmpeg_dir = get_ffmpeg_dir()
 
+    update_progress(task_id, {
+        'status': 'starting',
+        'percent': 5,
+        'stage': 'Conectando ao YouTube...'
+    })
+
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            percent = 0
+            if total and total > 0:
+                percent = min(round((downloaded / total) * 100, 1), 98.0)
+
+            speed = d.get('speed')
+            speed_str = (format_size(speed) + "/s") if speed else ""
+
+            eta = d.get('eta')
+            eta_str = f"{eta}s restantes" if (eta and eta > 0) else ""
+
+            update_progress(task_id, {
+                'status': 'downloading',
+                'percent': max(percent, 5.0),
+                'speed': speed_str,
+                'eta': eta_str,
+                'downloaded': format_size(downloaded),
+                'total': format_size(total) if total > 0 else '',
+                'stage': 'Baixando stream de mídia...'
+            })
+        elif d['status'] == 'finished':
+            update_progress(task_id, {
+                'status': 'merging',
+                'percent': 99.0,
+                'speed': '',
+                'eta': '',
+                'stage': 'Unindo e finalizando arquivo com FFmpeg...'
+            })
+
     ydl_opts = get_base_ydl_opts()
+    ydl_opts['progress_hooks'] = [progress_hook]
 
     if media_type == 'audio':
         ydl_opts.update({
@@ -276,12 +360,19 @@ def download_video():
             if not matches:
                 matches = glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
                 if not matches:
+                    update_progress(task_id, {'status': 'error', 'stage': 'Arquivo não encontrado'})
                     return jsonify({"error": "Arquivo baixado não foi encontrado no servidor."}), 500
 
             actual_file = matches[0]
             ext = os.path.splitext(actual_file)[1] or ('.mp3' if media_type == 'audio' else '.mp4')
             safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
             download_name = f"{safe_title}{ext}"
+
+            update_progress(task_id, {
+                'status': 'finished',
+                'percent': 100,
+                'stage': 'Download finalizado! Salvando no seu dispositivo...'
+            })
 
             @after_this_request
             def cleanup(response):
@@ -301,6 +392,7 @@ def download_video():
     except Exception as e:
         err_str = str(e)
         print(f"Erro no download: {err_str}")
+        update_progress(task_id, {'status': 'error', 'stage': err_str})
         if "Sign in to confirm you're not a bot" in err_str:
             return jsonify({
                 "error": "O YouTube solicitou verificação anti-bot para esta requisição. Adicione o arquivo cookies.txt na pasta backend para liberar.",
