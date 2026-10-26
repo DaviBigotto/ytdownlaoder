@@ -19,6 +19,8 @@ import {
   HardDrive
 } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function App() {
   const [url, setUrl] = useState('');
   const [loadingInfo, setLoadingInfo] = useState(false);
@@ -40,7 +42,7 @@ export default function App() {
     setVideoData(null);
 
     try {
-      const response = await fetch('http://localhost:5000/info', {
+      const response = await fetch(`${API_BASE}/info`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url.trim() }),
@@ -74,7 +76,7 @@ export default function App() {
         bitrate: type === 'audio' ? item.bitrate : undefined,
       };
 
-      const response = await fetch('http://localhost:5000/download', {
+      const response = await fetch(`${API_BASE}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
