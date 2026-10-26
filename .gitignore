@@ -1,0 +1,27 @@
+# Python
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.env
+
+# Downloads e arquivos sensíveis temporários
+backend/downloads/*
+!backend/downloads/.gitkeep
+backend/cookies.txt
+cookies.txt
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Sistema operacional e IDEs
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
