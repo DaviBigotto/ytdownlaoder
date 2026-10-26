@@ -27,6 +27,29 @@ if cookies_env and (not os.path.exists(COOKIES_FILE) or os.path.getsize(COOKIES_
     except Exception as e:
         print(f"Erro ao salvar cookies da variável de ambiente: {e}")
 
+def parse_proxy_url(proxy_str):
+    """Normaliza o proxy para o formato aceito pelo yt-dlp (http://user:pass@host:port)."""
+    if not proxy_str:
+        return None
+    proxy_str = proxy_str.strip()
+    if proxy_str.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+        return proxy_str
+    parts = proxy_str.split(':')
+    if len(parts) == 4:
+        # Formato host:port:user:pass
+        host, port, user, password = parts
+        return f"http://{user}:{password}@{host}:{port}"
+    if len(parts) == 2:
+        # Formato host:port
+        host, port = parts
+        return f"http://{host}:{port}"
+    return f"http://{proxy_str}"
+
+# Proxy rotativo configurado via variável de ambiente PROXY_URL ou ROTATING_PROXY_URL
+PROXY_URL = parse_proxy_url(os.environ.get('PROXY_URL') or os.environ.get('ROTATING_PROXY_URL'))
+if PROXY_URL:
+    print(f"Proxy rotativo configurado com sucesso.")
+
 # Gerenciador thread-safe de progresso dos downloads
 download_progress = {}
 progress_lock = threading.Lock()
@@ -95,7 +118,7 @@ def get_node_path():
         return default_node
     return None
 
-def get_base_ydl_opts():
+def get_base_ydl_opts(use_proxy=True):
     """Retorna as opções base para contornar proteções e desafios do YouTube."""
     opts = {
         'quiet': False,
@@ -107,6 +130,9 @@ def get_base_ydl_opts():
             }
         }
     }
+
+    if use_proxy and PROXY_URL:
+        opts['proxy'] = PROXY_URL
 
     node_path = get_node_path()
     if node_path:
@@ -145,7 +171,8 @@ def home():
         "frontend_url": "http://localhost:5173",
         "yt_dlp_version": getattr(yt_dlp, '__version__', getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown')),
         "ffmpeg_ready": get_ffmpeg_dir() is not None,
-        "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0
+        "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
+        "has_proxy": bool(PROXY_URL)
     })
 
 @app.route('/progress/<task_id>', methods=['GET'])
@@ -339,7 +366,10 @@ def download_video():
                 'stage': 'Unindo e finalizando arquivo com FFmpeg...'
             })
 
-    ydl_opts = get_base_ydl_opts()
+    # Por padrão, NÃO gasta franquia do proxy baixando o arquivo pesado de vídeo.
+    # O proxy é usado apenas para a extração dos links (~50kb), e o download é feito direto pela internet do Render.
+    use_proxy_dl = os.environ.get('PROXY_DOWNLOAD', 'false').lower() in ('true', '1', 'yes')
+    ydl_opts = get_base_ydl_opts(use_proxy=use_proxy_dl)
     ydl_opts['progress_hooks'] = [progress_hook]
 
     if media_type == 'audio':
@@ -378,9 +408,21 @@ def download_video():
         ydl_opts['ffmpeg_location'] = ffmpeg_dir
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'video')
+        if PROXY_URL and not use_proxy_dl:
+            # 1. Extrai info e streams com o proxy (gasta apenas ~50kb de banda do proxy)
+            opts_extract = get_base_ydl_opts(use_proxy=True)
+            opts_extract['skip_download'] = True
+            with yt_dlp.YoutubeDL(opts_extract) as ydl_extract:
+                info = ydl_extract.extract_info(url, download=False)
+            
+            # 2. Faz o download do arquivo de mídia pesado diretamente pelo Render (0 bytes do proxy)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.process_ie_result(info, download=True)
+                title = info.get('title', 'video')
+        else:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', 'video')
 
             matches = [
                 f for f in glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
