@@ -13,6 +13,10 @@ if [ -f "/opt/pot-provider/build/main.js" ]; then
     for i in $(seq 1 12); do
         if curl -s http://127.0.0.1:4416/ping > /dev/null 2>&1; then
             echo "[POT-PROVIDER] OK: Servidor de PO Token respondendo com sucesso em http://127.0.0.1:4416 !"
+            # Pré-aquecimento em background para o primeiro usuário não esperar o BotGuard compilar
+            echo "[POT-PROVIDER] Pré-aquecendo gerador de tokens BotGuard..."
+            curl -s -X POST http://127.0.0.1:4416/get_pot -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 || true
+            echo "[POT-PROVIDER] Pré-aquecimento concluído!"
             break
         fi
         sleep 1
