@@ -17,9 +17,32 @@ DOWNLOAD_FOLDER = os.path.join(BASE_DIR, 'downloads')
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 COOKIES_FILE = os.path.join(BASE_DIR, 'cookies.txt')
 
+# Se cookies foram fornecidos via variável de ambiente (útil no Render), salva em cookies.txt
+cookies_env = os.environ.get('YOUTUBE_COOKIES') or os.environ.get('COOKIES_CONTENT')
+if cookies_env and (not os.path.exists(COOKIES_FILE) or os.path.getsize(COOKIES_FILE) == 0):
+    try:
+        with open(COOKIES_FILE, 'w', encoding='utf-8') as f:
+            f.write(cookies_env.strip())
+        print("Arquivo cookies.txt criado a partir da variável de ambiente com sucesso.")
+    except Exception as e:
+        print(f"Erro ao salvar cookies da variável de ambiente: {e}")
+
 # Gerenciador thread-safe de progresso dos downloads
 download_progress = {}
 progress_lock = threading.Lock()
+
+def is_youtube_bot_error(err_str):
+    """Verifica se o erro é decorrente de bloqueio de IP/Datacenter ou desafio anti-bot do YouTube."""
+    if not err_str:
+        return False
+    lower = err_str.lower()
+    return (
+        "sign in to confirm you're not a bot" in lower
+        or "failed to extract any player response" in lower
+        or "confirm you are on the latest version" in lower
+        or "http error 429" in lower
+        or "too many requests" in lower
+    )
 
 def update_progress(task_id, data):
     if not task_id:
@@ -78,6 +101,11 @@ def get_base_ydl_opts():
         'quiet': False,
         'no_warnings': False,
         'remote_components': ['ejs:github'],
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web']
+            }
+        }
     }
 
     node_path = get_node_path()
@@ -115,8 +143,9 @@ def home():
         "status": "online",
         "message": "Servidor Backend Flask rodando com sucesso!",
         "frontend_url": "http://localhost:5173",
+        "yt_dlp_version": getattr(yt_dlp, '__version__', getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown')),
         "ffmpeg_ready": get_ffmpeg_dir() is not None,
-        "has_cookies": os.path.exists(COOKIES_FILE)
+        "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0
     })
 
 @app.route('/progress/<task_id>', methods=['GET'])
@@ -249,9 +278,9 @@ def video_info():
     except Exception as e:
         err_str = str(e)
         print(f"Erro ao obter info: {err_str}")
-        if "Sign in to confirm you're not a bot" in err_str:
+        if is_youtube_bot_error(err_str):
             return jsonify({
-                "error": "O YouTube solicitou verificação anti-bot para esta requisição. Adicione o arquivo cookies.txt na pasta backend para liberar qualquer vídeo.",
+                "error": "O YouTube bloqueou a requisição na nuvem (proteção anti-bot). Adicione o arquivo cookies.txt na pasta backend ou configure a variável YOUTUBE_COOKIES no Render.",
                 "is_bot_error": True
             }), 403
         return jsonify({"error": f"Erro ao analisar o vídeo: {err_str}"}), 500
@@ -393,9 +422,9 @@ def download_video():
         err_str = str(e)
         print(f"Erro no download: {err_str}")
         update_progress(task_id, {'status': 'error', 'stage': err_str})
-        if "Sign in to confirm you're not a bot" in err_str:
+        if is_youtube_bot_error(err_str):
             return jsonify({
-                "error": "O YouTube solicitou verificação anti-bot para esta requisição. Adicione o arquivo cookies.txt na pasta backend para liberar.",
+                "error": "O YouTube solicitou verificação anti-bot para esta requisição. Adicione o arquivo cookies.txt na pasta backend ou configure a variável YOUTUBE_COOKIES no Render.",
                 "is_bot_error": True
             }), 403
         return jsonify({"error": str(e)}), 500

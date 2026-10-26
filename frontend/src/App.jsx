@@ -302,12 +302,12 @@ export default function App() {
             </div>
             {errorMessage.includes("anti-bot") && (
               <div className="mt-2 pt-3 border-t border-red-800/40 text-xs text-zinc-300 space-y-1.5 pl-8">
-                <p className="font-semibold text-red-400">💡 Como liberar o download agora:</p>
+                <p className="font-semibold text-red-400">💡 Como liberar o download no Render / Produção:</p>
                 <ol className="list-decimal list-inside space-y-1 text-zinc-400">
-                  <li>Instale no Chrome a extensão gratuita <strong className="text-white">Get cookies.txt LOCALLY</strong>.</li>
-                  <li>Abra o YouTube logado na sua conta normal.</li>
-                  <li>Clique na extensão e escolha <strong className="text-white">Export</strong>.</li>
-                  <li>Salve o arquivo como <strong className="text-white font-mono">cookies.txt</strong> na pasta <code className="text-red-400 bg-black/60 px-1 rounded">backend/</code>.</li>
+                  <li>Exporte seus cookies do YouTube no formato Netscape (usando a extensão <strong className="text-white">Get cookies.txt LOCALLY</strong>).</li>
+                  <li>No painel do <strong>Render</strong>, acesse seu serviço backend &gt; <strong>Environment</strong>.</li>
+                  <li>Crie um <strong>Secret File</strong> chamado <strong className="text-white font-mono">cookies.txt</strong> (ou adicione a variável <strong className="text-white font-mono">YOUTUBE_COOKIES</strong> com o texto dos cookies).</li>
+                  <li>(No ambiente local: basta salvar como <strong className="text-white font-mono">cookies.txt</strong> na pasta <code className="text-red-400 bg-black/60 px-1 rounded">backend/</code>).</li>
                 </ol>
               </div>
             )}
