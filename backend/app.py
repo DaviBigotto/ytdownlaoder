@@ -7,6 +7,7 @@ import glob
 import shutil
 import threading
 import time
+import urllib.request
 
 app = Flask(__name__)
 CORS(app)
@@ -108,6 +109,17 @@ def get_ffmpeg_dir():
 
     return None
 
+def is_pot_provider_available():
+    """Verifica se o servidor local do PO Token Provider (bgutil) está ativo."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:4416/ping")
+        with urllib.request.urlopen(req, timeout=1.0) as res:
+            if res.status == 200:
+                return True
+    except Exception:
+        pass
+    return False
+
 def get_node_path():
     """Localiza o executável do Node.js para os desafios JavaScript do YouTube."""
     system_node = shutil.which('node')
@@ -120,17 +132,32 @@ def get_node_path():
 
 def get_base_ydl_opts(use_proxy=True):
     """Retorna as opções base para contornar proteções e desafios do YouTube."""
+    pot_active = is_pot_provider_available()
+
     opts = {
         'quiet': False,
         'no_warnings': False,
         'remote_components': ['ejs:github'],
-        'extractor_args': {
+    }
+
+    if pot_active:
+        # Quando o POT provider está ativo na porta 4416, os clientes web e tv_simply
+        # liberam resoluções 1080p, 1440p e 4K com tokens PO gerados automaticamente!
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['web', 'tv_simply', 'mweb']
+            }
+        }
+    else:
+        # Fallback para mobile quando não há POT provider disponível
+        opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['ios', 'android', 'web']
             }
         }
-    }
 
+    # Se o POT provider estiver ativo, o tráfego direto do Render funciona sem proxy!
+    # Só usa proxy se explicitamente configurado e solicitado
     if use_proxy and PROXY_URL:
         opts['proxy'] = PROXY_URL
 
@@ -165,12 +192,14 @@ def format_duration(seconds):
 
 @app.route('/')
 def home():
+    pot_ready = is_pot_provider_available()
     return jsonify({
         "status": "online",
         "message": "Servidor Backend Flask rodando com sucesso!",
-        "frontend_url": "http://localhost:5173",
+        "frontend_url": "https://streamdownload.vercel.app",
         "yt_dlp_version": getattr(yt_dlp, '__version__', getattr(getattr(yt_dlp, 'version', None), '__version__', 'unknown')),
         "ffmpeg_ready": get_ffmpeg_dir() is not None,
+        "pot_provider_ready": pot_ready,
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
         "has_proxy": bool(PROXY_URL)
     })
@@ -366,8 +395,6 @@ def download_video():
                 'stage': 'Unindo e finalizando arquivo com FFmpeg...'
             })
 
-    # Por padrão, NÃO gasta franquia do proxy baixando o arquivo pesado de vídeo.
-    # O proxy é usado apenas para a extração dos links (~50kb), e o download é feito direto pela internet do Render.
     use_proxy_dl = os.environ.get('PROXY_DOWNLOAD', 'false').lower() in ('true', '1', 'yes')
     ydl_opts = get_base_ydl_opts(use_proxy=use_proxy_dl)
     ydl_opts['progress_hooks'] = [progress_hook]
@@ -408,57 +435,45 @@ def download_video():
         ydl_opts['ffmpeg_location'] = ffmpeg_dir
 
     try:
-        if PROXY_URL and not use_proxy_dl:
-            # 1. Extrai info e streams com o proxy (gasta apenas ~50kb de banda do proxy)
-            opts_extract = get_base_ydl_opts(use_proxy=True)
-            opts_extract['skip_download'] = True
-            with yt_dlp.YoutubeDL(opts_extract) as ydl_extract:
-                info = ydl_extract.extract_info(url, download=False)
-            
-            # 2. Faz o download do arquivo de mídia pesado diretamente pelo Render (0 bytes do proxy)
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.process_ie_result(info, download=True)
-                title = info.get('title', 'video')
-        else:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'video')
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'video')
 
-            matches = [
-                f for f in glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
-                if not f.endswith('.part') and not f.endswith('.ytdl')
-            ]
+        matches = [
+            f for f in glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
+            if not f.endswith('.part') and not f.endswith('.ytdl')
+        ]
+        if not matches:
+            matches = glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
             if not matches:
-                matches = glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
-                if not matches:
-                    update_progress(task_id, {'status': 'error', 'stage': 'Arquivo não encontrado'})
-                    return jsonify({"error": "Arquivo baixado não foi encontrado no servidor."}), 500
+                update_progress(task_id, {'status': 'error', 'stage': 'Arquivo não encontrado'})
+                return jsonify({"error": "Arquivo baixado não foi encontrado no servidor."}), 500
 
-            actual_file = matches[0]
-            ext = os.path.splitext(actual_file)[1] or ('.mp3' if media_type == 'audio' else '.mp4')
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            download_name = f"{safe_title}{ext}"
+        actual_file = matches[0]
+        ext = os.path.splitext(actual_file)[1] or ('.mp3' if media_type == 'audio' else '.mp4')
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        download_name = f"{safe_title}{ext}"
 
-            update_progress(task_id, {
-                'status': 'finished',
-                'percent': 100,
-                'stage': 'Download finalizado! Salvando no seu dispositivo...'
-            })
+        update_progress(task_id, {
+            'status': 'finished',
+            'percent': 100,
+            'stage': 'Download finalizado! Salvando no seu dispositivo...'
+        })
 
-            @after_this_request
-            def cleanup(response):
-                try:
-                    if os.path.exists(actual_file):
-                        os.remove(actual_file)
-                except Exception as ex:
-                    print(f"Erro ao limpar arquivo temporário: {ex}")
-                return response
+        @after_this_request
+        def cleanup(response):
+            try:
+                if os.path.exists(actual_file):
+                    os.remove(actual_file)
+            except Exception as ex:
+                print(f"Erro ao limpar arquivo temporário: {ex}")
+            return response
 
-            return send_file(
-                actual_file,
-                as_attachment=True,
-                download_name=download_name
-            )
+        return send_file(
+            actual_file,
+            as_attachment=True,
+            download_name=download_name
+        )
 
     except Exception as e:
         err_str = str(e)
