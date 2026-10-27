@@ -12,6 +12,7 @@ import urllib.parse
 import subprocess
 import copy
 import sys
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -21,31 +22,39 @@ VIDEO_INFO_CACHE = {}
 CACHE_LOCK = threading.Lock()
 CACHE_TTL = 900  # 15 minutos
 
+def extract_video_id(url_str):
+    if not url_str:
+        return None
+    match = re.search(r'(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})', url_str)
+    if match:
+        return match.group(1)
+    return url_str.strip().split('?')[0].split('&')[0]
+
 def get_cached_video(url_str):
     if not url_str:
         return None, None
-    clean_url = url_str.strip().split('&list=')[0].split('&index=')[0]
+    vid_id = extract_video_id(url_str) or url_str.strip()
     now = time.time()
     with CACHE_LOCK:
-        if clean_url in VIDEO_INFO_CACHE:
-            ts, formatted, raw = VIDEO_INFO_CACHE[clean_url]
+        if vid_id in VIDEO_INFO_CACHE:
+            ts, formatted, raw = VIDEO_INFO_CACHE[vid_id]
             if now - ts < CACHE_TTL:
                 return formatted, raw
             else:
-                del VIDEO_INFO_CACHE[clean_url]
+                del VIDEO_INFO_CACHE[vid_id]
     return None, None
 
 def set_cached_video(url_str, formatted, raw):
     if not url_str:
         return
-    clean_url = url_str.strip().split('&list=')[0].split('&index=')[0]
+    vid_id = extract_video_id(url_str) or url_str.strip()
     now = time.time()
     with CACHE_LOCK:
         if len(VIDEO_INFO_CACHE) > 100:
             expired = [k for k, (t, _, _) in VIDEO_INFO_CACHE.items() if now - t > CACHE_TTL]
             for k in expired:
                 del VIDEO_INFO_CACHE[k]
-        VIDEO_INFO_CACHE[clean_url] = (now, formatted, raw)
+        VIDEO_INFO_CACHE[vid_id] = (now, formatted, raw)
 
 # Pasta temporária com caminho absoluto
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,6 +107,7 @@ def is_youtube_bot_error(err_str):
     normalized = err_str.lower().replace("’", "'").replace("`", "'")
     return (
         "sign in to confirm you're not a bot" in normalized
+        or "please sign in" in normalized
         or "failed to extract any player response" in normalized
         or "confirm you are on the latest version" in normalized
         or "http error 429" in normalized
@@ -336,130 +346,130 @@ def video_info():
             else:
                 raise first_err
 
-            title = info.get('title', 'Vídeo do YouTube')
-            thumbnail = info.get('thumbnail')
-            duration = info.get('duration', 0)
-            uploader = info.get('uploader') or info.get('channel', 'Desconhecido')
+        title = info.get('title', 'Vídeo do YouTube')
+        thumbnail = info.get('thumbnail')
+        duration = info.get('duration', 0)
+        uploader = info.get('uploader') or info.get('channel', 'Desconhecido')
 
-            best_audio_size = 0
-            best_audio_tbr = 128
-            for f in info.get('formats', []):
-                if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
-                    size = f.get('filesize') or f.get('filesize_approx')
-                    if size and size > best_audio_size:
-                        best_audio_size = size
-                    if f.get('tbr') and f.get('tbr') > best_audio_tbr:
-                        best_audio_tbr = f.get('tbr')
+        best_audio_size = 0
+        best_audio_tbr = 128
+        for f in info.get('formats', []):
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                size = f.get('filesize') or f.get('filesize_approx')
+                if size and size > best_audio_size:
+                    best_audio_size = size
+                if f.get('tbr') and f.get('tbr') > best_audio_tbr:
+                    best_audio_tbr = f.get('tbr')
 
-            if best_audio_size == 0 and duration > 0:
-                best_audio_size = int((best_audio_tbr * 1000 / 8) * duration)
+        if best_audio_size == 0 and duration > 0:
+            best_audio_size = int((best_audio_tbr * 1000 / 8) * duration)
 
-            quality_labels = {
-                2160: ("4K", "Ultra HD"),
-                1440: ("2K", "Quad HD"),
-                1080: ("1080p", "Full HD"),
-                720: ("720p", "HD"),
-                480: ("480p", "SD"),
-                360: ("360p", "Normal"),
-                240: ("240p", "Baixa"),
-                144: ("144p", "Mínima")
-            }
+        quality_labels = {
+            2160: ("4K", "Ultra HD"),
+            1440: ("2K", "Quad HD"),
+            1080: ("1080p", "Full HD"),
+            720: ("720p", "HD"),
+            480: ("480p", "SD"),
+            360: ("360p", "Normal"),
+            240: ("240p", "Baixa"),
+            144: ("144p", "Mínima")
+        }
 
-            video_formats_by_height = {}
-            for f in info.get('formats', []):
-                # Ignora formatos sem vídeo (áudios puros e imagens de storyboard)
-                if not f.get('vcodec') or f.get('vcodec') == 'none':
-                    continue
-                h = f.get('height')
-                if not h:
-                    continue
+        video_formats_by_height = {}
+        for f in info.get('formats', []):
+            # Ignora formatos sem vídeo (áudios puros e imagens de storyboard)
+            if not f.get('vcodec') or f.get('vcodec') == 'none':
+                continue
+            h = f.get('height')
+            if not h:
+                continue
 
-                matched_standard = None
-                for std_h in sorted(quality_labels.keys(), reverse=True):
-                    if h >= std_h - 10:
-                        matched_standard = std_h
-                        break
+            matched_standard = None
+            for std_h in sorted(quality_labels.keys(), reverse=True):
+                if h >= std_h - 10:
+                    matched_standard = std_h
+                    break
 
-                if not matched_standard:
-                    continue
+            if not matched_standard:
+                continue
 
-                v_size = f.get('filesize') or f.get('filesize_approx')
-                if not v_size and f.get('tbr') and duration > 0:
-                    v_size = int((f.get('tbr') * 1000 / 8) * duration)
+            v_size = f.get('filesize') or f.get('filesize_approx')
+            if not v_size and f.get('tbr') and duration > 0:
+                v_size = int((f.get('tbr') * 1000 / 8) * duration)
 
-                has_audio = bool(f.get('acodec') and f.get('acodec') != 'none')
-                total_size = (v_size or 0) + (best_audio_size if not has_audio else 0)
+            has_audio = bool(f.get('acodec') and f.get('acodec') != 'none')
+            total_size = (v_size or 0) + (best_audio_size if not has_audio else 0)
 
-                should_update = False
-                if matched_standard not in video_formats_by_height:
-                    should_update = True
-                elif has_audio and not video_formats_by_height[matched_standard]['has_audio']:
-                    should_update = True
-                elif total_size > video_formats_by_height[matched_standard]['raw_size']:
-                    should_update = True
+            should_update = False
+            if matched_standard not in video_formats_by_height:
+                should_update = True
+            elif has_audio and not video_formats_by_height[matched_standard]['has_audio']:
+                should_update = True
+            elif total_size > video_formats_by_height[matched_standard]['raw_size']:
+                should_update = True
 
-                if should_update:
-                    lbl, sub_lbl = quality_labels.get(matched_standard, (f"{matched_standard}p", ""))
-                    video_formats_by_height[matched_standard] = {
-                        'height': matched_standard,
-                        'quality': lbl,
-                        'label': sub_lbl,
-                        'format': 'MP4',
-                        'raw_size': total_size,
-                        'size': format_size(total_size),
-                        'direct_url': f.get('url'),
-                        'has_audio': has_audio
-                    }
+            if should_update:
+                lbl, sub_lbl = quality_labels.get(matched_standard, (f"{matched_standard}p", ""))
+                video_formats_by_height[matched_standard] = {
+                    'height': matched_standard,
+                    'quality': lbl,
+                    'label': sub_lbl,
+                    'format': 'MP4',
+                    'raw_size': total_size,
+                    'size': format_size(total_size),
+                    'direct_url': f.get('url'),
+                    'has_audio': has_audio
+                }
 
-            video_list = [
-                video_formats_by_height[k]
-                for k in sorted(video_formats_by_height.keys(), reverse=True)
-            ]
+        video_list = [
+            video_formats_by_height[k]
+            for k in sorted(video_formats_by_height.keys(), reverse=True)
+        ]
 
-            # Localiza o melhor stream direto de áudio puro (M4A)
-            best_audio_direct = None
-            for f in info.get('formats', []):
-                if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url'):
-                    if not best_audio_direct or (f.get('tbr') or 0) > (best_audio_direct.get('tbr') or 0):
-                        best_audio_direct = f
+        # Localiza o melhor stream direto de áudio puro (M4A)
+        best_audio_direct = None
+        for f in info.get('formats', []):
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url'):
+                if not best_audio_direct or (f.get('tbr') or 0) > (best_audio_direct.get('tbr') or 0):
+                    best_audio_direct = f
 
-            audio_direct_url = best_audio_direct.get('url') if best_audio_direct else None
-            audio_direct_ext = (best_audio_direct.get('ext') or 'm4a').upper() if best_audio_direct else 'M4A'
+        audio_direct_url = best_audio_direct.get('url') if best_audio_direct else None
+        audio_direct_ext = (best_audio_direct.get('ext') or 'm4a').upper() if best_audio_direct else 'M4A'
 
-            audio_options = [
-                {"quality": "320 kbps", "label": "Qualidade Máxima", "bitrate": "320", "format": "MP3"},
-                {"quality": "192 kbps", "label": "Alta Qualidade", "bitrate": "192", "format": "MP3"},
-                {"quality": "128 kbps", "label": "Qualidade Padrão", "bitrate": "128", "format": "MP3"},
-                {"quality": "64 kbps", "label": "Econômico", "bitrate": "64", "format": "MP3"}
-            ]
+        audio_options = [
+            {"quality": "320 kbps", "label": "Qualidade Máxima", "bitrate": "320", "format": "MP3"},
+            {"quality": "192 kbps", "label": "Alta Qualidade", "bitrate": "192", "format": "MP3"},
+            {"quality": "128 kbps", "label": "Qualidade Padrão", "bitrate": "128", "format": "MP3"},
+            {"quality": "64 kbps", "label": "Econômico", "bitrate": "64", "format": "MP3"}
+        ]
 
-            audio_list = []
-            for a in audio_options:
-                b_val = int(a['bitrate'])
-                est_bytes = int((b_val * 1000 / 8) * duration) if duration > 0 else 0
-                audio_list.append({
-                    'quality': a['quality'],
-                    'label': a['label'],
-                    'bitrate': a['bitrate'],
-                    'format': a['format'],
-                    'size': format_size(est_bytes),
-                    'direct_url': audio_direct_url,
-                    'direct_format': audio_direct_ext
-                })
+        audio_list = []
+        for a in audio_options:
+            b_val = int(a['bitrate'])
+            est_bytes = int((b_val * 1000 / 8) * duration) if duration > 0 else 0
+            audio_list.append({
+                'quality': a['quality'],
+                'label': a['label'],
+                'bitrate': a['bitrate'],
+                'format': a['format'],
+                'size': format_size(est_bytes),
+                'direct_url': audio_direct_url,
+                'direct_format': audio_direct_ext
+            })
 
-            res_data = {
-                "title": title,
-                "thumbnail": thumbnail,
-                "duration": format_duration(duration),
-                "uploader": uploader,
-                "videos": video_list,
-                "audios": audio_list
-            }
+        res_data = {
+            "title": title,
+            "thumbnail": thumbnail,
+            "duration": format_duration(duration),
+            "uploader": uploader,
+            "videos": video_list,
+            "audios": audio_list
+        }
 
-            # Armazena em cache para acelerar reanálise e o início do download
-            set_cached_video(url, res_data, info)
+        # Armazena em cache para acelerar reanálise e o início do download
+        set_cached_video(url, res_data, info)
 
-            return jsonify(res_data)
+        return jsonify(res_data)
 
     except Exception as e:
         err_str = str(e)
@@ -481,8 +491,17 @@ def get_media_stream_urls(url, height=None, media_type='video'):
         pot_active = is_pot_provider_available()
         ydl_opts = get_base_ydl_opts(use_proxy=False if pot_active else True)
         ydl_opts['skip_download'] = True
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            raw = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                raw = ydl.extract_info(url, download=False)
+        except Exception as first_err:
+            if PROXY_URL and not ydl_opts.get('proxy'):
+                ydl_opts_proxy = get_base_ydl_opts(use_proxy=True)
+                ydl_opts_proxy.update({'skip_download': True})
+                with yt_dlp.YoutubeDL(ydl_opts_proxy) as ydl_proxy:
+                    raw = ydl_proxy.extract_info(url, download=False)
+            else:
+                raise first_err
 
     title = (formatted.get('title') if formatted else None) or (raw.get('title') if raw else "video")
     formats = raw.get('formats', []) if raw else []
