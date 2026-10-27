@@ -68,6 +68,21 @@ export default function App() {
     }
   };
 
+  // Download Direto (Google CDN - Instantâneo, estilo ytultra)
+  const handleDirectDownload = (directUrl, filename) => {
+    if (!directUrl) return;
+    const a = document.createElement('a');
+    a.href = directUrl;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.download = filename || 'download.mp4';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setSuccessMessage('Download direto iniciado no seu navegador!');
+    setTimeout(() => setSuccessMessage(''), 4000);
+  };
+
   // Dispara o download da opção selecionada com rastreamento de progresso
   const handleDownloadItem = async (item, type) => {
     const itemKey = type === 'video' ? `video_${item.height}` : `audio_${item.bitrate}`;
@@ -461,6 +476,22 @@ export default function App() {
               </button>
             </div>
 
+            {/* Legenda Informativa dos 2 Métodos de Download */}
+            <div className="flex flex-wrap items-center justify-between px-5 py-3 bg-[#161822] border-b border-white/[0.04] text-[11px] gap-2">
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-bold border border-emerald-500/30">
+                  <Zap className="w-3 h-3 fill-current" /> Direto
+                </span>
+                Instantâneo da Google (estilo ytultra)
+              </span>
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-600/15 text-red-400 font-bold border border-red-500/30">
+                  <Download className="w-3 h-3" /> Mesclado
+                </span>
+                Vídeo + Áudio HD com som perfeito
+              </span>
+            </div>
+
             {/* Tabela de Qualidades */}
             <div className="p-4 sm:p-6">
               
@@ -474,7 +505,7 @@ export default function App() {
                           <th className="pb-3.5 font-bold pl-2">Qualidade</th>
                           <th className="pb-3.5 font-bold">Formato</th>
                           <th className="pb-3.5 font-bold">Tamanho Est.</th>
-                          <th className="pb-3.5 font-bold text-right pr-2">Download</th>
+                          <th className="pb-3.5 font-bold text-right pr-2">Opções de Download</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/[0.04]">
@@ -499,24 +530,41 @@ export default function App() {
                                 {item.size}
                               </td>
                               <td className="py-3.5 pr-2 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleDownloadItem(item, 'video')}
-                                  disabled={downloadingKey !== null}
-                                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                                >
-                                  {isDownloading ? (
-                                    <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>Processando...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Download className="w-3.5 h-3.5" />
-                                      <span>Baixar</span>
-                                    </>
+                                <div className="inline-flex items-center gap-2 justify-end">
+                                  {/* Botão 1: ⚡ Direto (Google CDN - Instantâneo, estilo ytultra) */}
+                                  {item.direct_url && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDirectDownload(item.direct_url, `${videoData.title}_${item.quality}.mp4`)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold rounded-lg transition-all active:scale-95 cursor-pointer shadow-sm"
+                                      title={item.has_audio ? "Download direto instantâneo do Google (com áudio)" : "Download direto instantâneo do Google (Stream original)"}
+                                    >
+                                      <Zap className="w-3.5 h-3.5 fill-current" />
+                                      <span>Direto</span>
+                                    </button>
                                   )}
-                                </button>
+
+                                  {/* Botão 2: 🎬 Download Completo (Com Som Mesclado via Servidor) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadItem(item, 'video')}
+                                    disabled={downloadingKey !== null}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
+                                    title="Unir vídeo e áudio em alta resolução via servidor"
+                                  >
+                                    {isDownloading ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Processando...</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Download className="w-3.5 h-3.5" />
+                                        <span>Mesclado</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -559,7 +607,7 @@ export default function App() {
                         <th className="pb-3.5 font-bold pl-2">Bitrate</th>
                         <th className="pb-3.5 font-bold">Formato</th>
                         <th className="pb-3.5 font-bold">Tamanho Est.</th>
-                        <th className="pb-3.5 font-bold text-right pr-2">Download</th>
+                        <th className="pb-3.5 font-bold text-right pr-2">Opções de Download</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/[0.04]">
@@ -585,24 +633,41 @@ export default function App() {
                               {item.size}
                             </td>
                             <td className="py-3.5 pr-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadItem(item, 'audio')}
-                                disabled={downloadingKey !== null}
-                                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                              >
-                                {isDownloading ? (
-                                  <>
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Processando...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Download className="w-3.5 h-3.5" />
-                                    <span>Baixar MP3</span>
-                                  </>
+                              <div className="inline-flex items-center gap-2 justify-end">
+                                {/* Botão 1: ⚡ Direto (M4A Instantâneo) */}
+                                {item.direct_url && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDirectDownload(item.direct_url, `${videoData.title}_audio.${(item.direct_format || 'm4a').toLowerCase()}`)}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold rounded-lg transition-all active:scale-95 cursor-pointer shadow-sm"
+                                    title="Download direto instantâneo do áudio original em alta fidelidade"
+                                  >
+                                    <Zap className="w-3.5 h-3.5 fill-current" />
+                                    <span>Direto ({item.direct_format || 'M4A'})</span>
+                                  </button>
                                 )}
-                              </button>
+
+                                {/* Botão 2: 🎵 Baixar MP3 (Convertido via Servidor) */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadItem(item, 'audio')}
+                                  disabled={downloadingKey !== null}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
+                                  title="Converter para MP3 na taxa de bits selecionada via servidor"
+                                >
+                                  {isDownloading ? (
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Processando...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Download className="w-3.5 h-3.5" />
+                                      <span>Baixar MP3</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );

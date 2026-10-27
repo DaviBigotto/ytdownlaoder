@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify, after_this_request
+from flask import Flask, request, send_file, jsonify, after_this_request, redirect
 from flask_cors import CORS
 import yt_dlp
 import os
@@ -326,9 +326,18 @@ def video_info():
                 if not v_size and f.get('tbr') and duration > 0:
                     v_size = int((f.get('tbr') * 1000 / 8) * duration)
 
-                total_size = (v_size or 0) + (best_audio_size if f.get('acodec') == 'none' else 0)
+                has_audio = bool(f.get('acodec') and f.get('acodec') != 'none')
+                total_size = (v_size or 0) + (best_audio_size if not has_audio else 0)
 
-                if matched_standard not in video_formats_by_height or total_size > video_formats_by_height[matched_standard]['raw_size']:
+                should_update = False
+                if matched_standard not in video_formats_by_height:
+                    should_update = True
+                elif has_audio and not video_formats_by_height[matched_standard]['has_audio']:
+                    should_update = True
+                elif total_size > video_formats_by_height[matched_standard]['raw_size']:
+                    should_update = True
+
+                if should_update:
                     lbl, sub_lbl = quality_labels.get(matched_standard, (f"{matched_standard}p", ""))
                     video_formats_by_height[matched_standard] = {
                         'height': matched_standard,
@@ -336,13 +345,25 @@ def video_info():
                         'label': sub_lbl,
                         'format': 'MP4',
                         'raw_size': total_size,
-                        'size': format_size(total_size)
+                        'size': format_size(total_size),
+                        'direct_url': f.get('url'),
+                        'has_audio': has_audio
                     }
 
             video_list = [
                 video_formats_by_height[k]
                 for k in sorted(video_formats_by_height.keys(), reverse=True)
             ]
+
+            # Localiza o melhor stream direto de áudio puro (M4A)
+            best_audio_direct = None
+            for f in info.get('formats', []):
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url'):
+                    if not best_audio_direct or (f.get('tbr') or 0) > (best_audio_direct.get('tbr') or 0):
+                        best_audio_direct = f
+
+            audio_direct_url = best_audio_direct.get('url') if best_audio_direct else None
+            audio_direct_ext = (best_audio_direct.get('ext') or 'm4a').upper() if best_audio_direct else 'M4A'
 
             audio_options = [
                 {"quality": "320 kbps", "label": "Qualidade Máxima", "bitrate": "320", "format": "MP3"},
@@ -360,7 +381,9 @@ def video_info():
                     'label': a['label'],
                     'bitrate': a['bitrate'],
                     'format': a['format'],
-                    'size': format_size(est_bytes)
+                    'size': format_size(est_bytes),
+                    'direct_url': audio_direct_url,
+                    'direct_format': audio_direct_ext
                 })
 
             res_data = {
@@ -542,6 +565,14 @@ def download_video():
                 "is_bot_error": True
             }), 403
         return jsonify({"error": str(e)}), 500
+
+@app.route('/redirect-download', methods=['GET'])
+def redirect_download():
+    """Redireciona o navegador diretamente para o Google Video (Google CDN), estilo ytultra."""
+    target_url = request.args.get('url')
+    if not target_url:
+        return jsonify({"error": "URL de download não fornecida"}), 400
+    return redirect(target_url, code=302)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
