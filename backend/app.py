@@ -177,13 +177,12 @@ def get_base_ydl_opts(use_proxy=None):
     }
 
     if pot_active:
-        # Quando o POT provider (bgutil) está ativo, usamos 'tv_simply' (o mesmo de serviços como ytultra).
-        # Adicionamos 'tv' e 'mweb' como fallback caso 'tv_simply' precise de outros formatos.
-        # Ele gera o PO Token via BotGuard em 3-4s e traz resoluções até 4K.
+        # Quando o POT provider (bgutil) está ativo, usamos 'tv_simply' e 'web_embedded'.
+        # NÃO usamos player_skip: ['configs'] porque o visitor_data da configuração é obrigatório
+        # para a assinatura dos GVS PO Tokens que liberam as resoluções HD (720p, 1080p, 1440p, 4K).
         opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['tv_simply', 'tv', 'mweb'],
-                'player_skip': ['configs']
+                'player_client': ['tv_simply', 'web_embedded'],
             }
         }
     else:
@@ -354,6 +353,9 @@ def video_info():
 
             video_formats_by_height = {}
             for f in info.get('formats', []):
+                # Ignora formatos sem vídeo (áudios puros e imagens de storyboard)
+                if not f.get('vcodec') or f.get('vcodec') == 'none':
+                    continue
                 h = f.get('height')
                 if not h:
                     continue
