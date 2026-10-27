@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.request
 import copy
+import sys
 
 app = Flask(__name__)
 CORS(app)
@@ -91,13 +92,14 @@ def is_youtube_bot_error(err_str):
     """Verifica se o erro é decorrente de bloqueio de IP/Datacenter ou desafio anti-bot do YouTube."""
     if not err_str:
         return False
-    lower = err_str.lower()
+    # Normaliza aspas simples, curvas e crases (e.g. you're, you’re, you`re)
+    normalized = err_str.lower().replace("’", "'").replace("`", "'")
     return (
-        "sign in to confirm you're not a bot" in lower
-        or "failed to extract any player response" in lower
-        or "confirm you are on the latest version" in lower
-        or "http error 429" in lower
-        or "too many requests" in lower
+        "sign in to confirm you're not a bot" in normalized
+        or "failed to extract any player response" in normalized
+        or "confirm you are on the latest version" in normalized
+        or "http error 429" in normalized
+        or "too many requests" in normalized
     )
 
 def update_progress(task_id, data):
@@ -162,7 +164,7 @@ def get_node_path():
         return default_node
     return None
 
-def get_base_ydl_opts(use_proxy=True):
+def get_base_ydl_opts(use_proxy=None):
     """Retorna as opções base para contornar proteções e desafios do YouTube com máxima velocidade."""
     pot_active = is_pot_provider_available()
 
@@ -175,12 +177,12 @@ def get_base_ydl_opts(use_proxy=True):
     }
 
     if pot_active:
-        # Usamos o cliente 'tv_simply', o mesmo utilizado pelos serviços mais rápidos (como ytultra).
-        # Ele gera apenas 1 PO Token via BotGuard e traz diretamente todas as resoluções (144p até 4K 2160p),
-        # sendo mais de 2x mais rápido que consultar múltiplos clientes ao mesmo tempo.
+        # Quando o POT provider (bgutil) está ativo, usamos 'tv_simply' (o mesmo de serviços como ytultra).
+        # Adicionamos 'tv' e 'mweb' como fallback caso 'tv_simply' precise de outros formatos.
+        # Ele gera o PO Token via BotGuard em 3-4s e traz resoluções até 4K.
         opts['extractor_args'] = {
             'youtube': {
-                'player_client': ['tv_simply'],
+                'player_client': ['tv_simply', 'tv', 'mweb'],
                 'player_skip': ['configs']
             }
         }
@@ -192,9 +194,11 @@ def get_base_ydl_opts(use_proxy=True):
             }
         }
 
-    # Se o POT provider estiver ativo, o tráfego direto do Render funciona sem proxy!
-    # Só usa proxy se explicitamente configurado e solicitado
-    if use_proxy and PROXY_URL:
+    # Se use_proxy for explicitamente True/False, respeita a decisão do chamador.
+    # Se use_proxy for None: quando o POT provider está ativo, NUNCA usa proxy por padrão,
+    # pois o proxy rotativo troca de IP a cada request e quebra o PO Token com 403 / bot detection.
+    should_use_proxy = use_proxy if use_proxy is not None else (not pot_active)
+    if should_use_proxy and PROXY_URL:
         opts['proxy'] = PROXY_URL
 
     node_path = get_node_path()
@@ -240,6 +244,17 @@ def home():
         "has_proxy": bool(PROXY_URL)
     })
 
+@app.route('/diag', methods=['GET'])
+def diag():
+    return jsonify({
+        "pot_provider_ready": is_pot_provider_available(),
+        "has_proxy": bool(PROXY_URL),
+        "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
+        "node_path": get_node_path(),
+        "ffmpeg_path": get_ffmpeg_dir(),
+        "python_version": sys.version
+    })
+
 @app.route('/progress/<task_id>', methods=['GET'])
 def get_progress(task_id):
     """Retorna o estado e progresso em tempo real do download para a barra de progresso."""
@@ -269,14 +284,26 @@ def video_info():
     if cached_formatted:
         return jsonify(cached_formatted)
 
-    ydl_opts = get_base_ydl_opts()
+    pot_active = is_pot_provider_available()
+    ydl_opts = get_base_ydl_opts(use_proxy=False if pot_active else True)
     ydl_opts.update({
         'skip_download': True,
     })
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as first_err:
+            # Se falhou sem proxy e temos proxy configurado, tenta com proxy como fallback
+            if PROXY_URL and not ydl_opts.get('proxy'):
+                print(f"Tentativa direta com POT falhou ({str(first_err)[:80]}). Tentando fallback com proxy...")
+                ydl_opts_proxy = get_base_ydl_opts(use_proxy=True)
+                ydl_opts_proxy.update({'skip_download': True})
+                with yt_dlp.YoutubeDL(ydl_opts_proxy) as ydl_proxy:
+                    info = ydl_proxy.extract_info(url, download=False)
+            else:
+                raise first_err
 
             title = info.get('title', 'Vídeo do YouTube')
             thumbnail = info.get('thumbnail')
@@ -405,7 +432,7 @@ def video_info():
         print(f"Erro ao obter info: {err_str}")
         if is_youtube_bot_error(err_str):
             return jsonify({
-                "error": "O YouTube bloqueou a requisição na nuvem (proteção anti-bot). Adicione o arquivo cookies.txt na pasta backend ou configure a variável YOUTUBE_COOKIES no Render.",
+                "error": "O YouTube solicitou verificação de autenticidade (anti-bot). O servidor PO Token tentou validar a sessão automaticamente. Tente novamente em alguns segundos ou adicione cookies.",
                 "is_bot_error": True
             }), 403
         return jsonify({"error": f"Erro ao analisar o vídeo: {err_str}"}), 500
