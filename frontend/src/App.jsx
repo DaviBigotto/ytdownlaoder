@@ -83,113 +83,51 @@ export default function App() {
     setTimeout(() => setSuccessMessage(''), 4000);
   };
 
-  // Dispara o download da opção selecionada com rastreamento de progresso
-  const handleDownloadItem = async (item, type) => {
+  // Dispara o download da opção selecionada via streaming contínuo sem limites de memória
+  const handleDownloadItem = (item, type) => {
     const itemKey = type === 'video' ? `video_${item.height}` : `audio_${item.bitrate}`;
-    const taskId = 'dl_' + Math.random().toString(36).substring(2, 9);
     
     setDownloadingKey(itemKey);
     setErrorMessage('');
     setSuccessMessage('');
 
-    // Inicia o card de progresso
+    const targetH = type === 'video' ? (item.height || '') : '';
+    const targetB = type === 'audio' ? (item.bitrate || '192') : '';
+    const safeTitle = encodeURIComponent(videoData?.title || 'video');
+    const streamUrl = `${API_BASE}/download-stream?url=${encodeURIComponent(url.trim())}&type=${type}&height=${targetH}&bitrate=${targetB}&title=${safeTitle}`;
+
+    // Mostra feedback imediato de streaming ativo
+    setSuccessMessage(`Download de "${item.quality}" iniciado! O vídeo e áudio estão sendo mesclados em tempo real.`);
+
+    // Inicia o card de progresso em modo streaming
     setProgressData({
-      taskId,
       quality: item.quality,
       type,
-      percent: 5,
-      speed: '',
-      eta: 'Calculando...',
-      downloaded: '',
+      percent: 100,
+      speed: 'Transferência direta',
+      eta: 'Em andamento',
+      downloaded: 'No seu navegador',
       total: item.size || '',
-      stage: 'Conectando ao servidor...',
+      stage: 'Mesclando áudio e vídeo e transferindo diretamente para o seu dispositivo...',
     });
 
-    // Inicia polling de progresso a cada 600ms
-    if (pollingRef.current) clearInterval(pollingRef.current);
-    pollingRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/progress/${taskId}`);
-        if (res.ok) {
-          const p = await res.json();
-          setProgressData((prev) => {
-            if (!prev) return null;
-            return {
-              ...prev,
-              percent: Math.max(prev.percent, p.percent || 5),
-              speed: p.speed || prev.speed,
-              eta: p.eta || prev.eta,
-              downloaded: p.downloaded || prev.downloaded,
-              total: p.total || prev.total,
-              stage: p.stage || prev.stage,
-            };
-          });
-        }
-      } catch (err) {
-        // Ignora erros transitórios de polling
-      }
-    }, 600);
+    // Dispara o download nativo do navegador
+    const a = document.createElement('a');
+    a.href = streamUrl;
+    a.setAttribute('download', '');
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
 
-    try {
-      const payload = {
-        url: url.trim(),
-        type: type,
-        height: type === 'video' ? item.height : undefined,
-        bitrate: type === 'audio' ? item.bitrate : undefined,
-        taskId: taskId,
-      };
-
-      const response = await fetch(`${API_BASE}/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Falha ao baixar arquivo.');
-      }
-
-      // Parar polling e marcar 100%
-      if (pollingRef.current) clearInterval(pollingRef.current);
-      setProgressData((prev) => prev ? {
-        ...prev,
-        percent: 100,
-        stage: 'Download pronto! Salvando arquivo...',
-        eta: 'Concluído'
-      } : null);
-
-      let filename = type === 'audio' ? `${videoData.title}.mp3` : `${videoData.title}.mp4`;
-      const disposition = response.headers.get('Content-Disposition');
-      if (disposition && disposition.includes('filename=')) {
-        const match = disposition.match(/filename\*?=['"]?(?:UTF-8'')?([^"';]+)['"]?/i);
-        if (match && match[1]) filename = decodeURIComponent(match[1]);
-      }
-
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(downloadUrl);
-
-      setSuccessMessage(`Download de "${item.quality}" concluído com sucesso!`);
-      
-      // Fecha a barra de progresso após 3 segundos
-      setTimeout(() => {
-        setProgressData(null);
-      }, 3500);
-
-    } catch (err) {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-      setProgressData(null);
-      setErrorMessage(err.message || 'Erro durante o download.');
-    } finally {
+    setTimeout(() => {
       setDownloadingKey(null);
-    }
+    }, 2000);
+
+    // Mantém o feedback por alguns segundos
+    setTimeout(() => {
+      setProgressData(null);
+      setSuccessMessage('');
+    }, 6000);
   };
 
   const visibleVideos = videoData?.videos 
@@ -488,7 +426,7 @@ export default function App() {
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-600/15 text-red-400 font-bold border border-red-500/30">
                   <Download className="w-3 h-3" /> Mesclado
                 </span>
-                Vídeo + Áudio HD com som perfeito
+                Vídeo + Áudio HD mesclados em tempo real (Stream)
               </span>
             </div>
 
@@ -550,12 +488,12 @@ export default function App() {
                                     onClick={() => handleDownloadItem(item, 'video')}
                                     disabled={downloadingKey !== null}
                                     className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                                    title="Unir vídeo e áudio em alta resolução via servidor"
+                                    title="Unir vídeo e áudio em alta resolução via streaming contínuo"
                                   >
                                     {isDownloading ? (
                                       <>
                                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                        <span>Processando...</span>
+                                        <span>Iniciando...</span>
                                       </>
                                     ) : (
                                       <>
@@ -647,18 +585,18 @@ export default function App() {
                                   </button>
                                 )}
 
-                                {/* Botão 2: 🎵 Baixar MP3 (Convertido via Servidor) */}
+                                {/* Botão 2: 🎵 Baixar MP3 (Convertido via Streaming) */}
                                 <button
                                   type="button"
                                   onClick={() => handleDownloadItem(item, 'audio')}
                                   disabled={downloadingKey !== null}
                                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                                  title="Converter para MP3 na taxa de bits selecionada via servidor"
+                                  title="Converter e baixar em MP3 via streaming contínuo"
                                 >
                                   {isDownloading ? (
                                     <>
                                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>Processando...</span>
+                                      <span>Iniciando...</span>
                                     </>
                                   ) : (
                                     <>

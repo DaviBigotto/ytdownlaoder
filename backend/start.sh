@@ -26,4 +26,4 @@ else
 fi
 
 echo "[GUNICORN] Iniciando servidor WSGI na porta ${PORT:-5000} com timeout de 600s..."
-exec gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --timeout 600 app:app
+exec gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --threads 4 --timeout 600 app:app

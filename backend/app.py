@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify, after_this_request, redirect
+from flask import Flask, request, send_file, jsonify, after_this_request, redirect, Response, stream_with_context
 from flask_cors import CORS
 import yt_dlp
 import os
@@ -8,6 +8,8 @@ import shutil
 import threading
 import time
 import urllib.request
+import urllib.parse
+import subprocess
 import copy
 import sys
 
@@ -142,6 +144,18 @@ def get_ffmpeg_dir():
         return os.path.dirname(matches[0])
 
     return None
+
+def get_ffmpeg_executable():
+    """Localiza o binário do FFmpeg no sistema ou variáveis de ambiente."""
+    system_ffmpeg = shutil.which('ffmpeg')
+    if system_ffmpeg:
+        return system_ffmpeg
+    f_dir = get_ffmpeg_dir()
+    if f_dir:
+        cand = os.path.join(f_dir, 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+        if os.path.exists(cand):
+            return cand
+    return 'ffmpeg'
 
 def is_pot_provider_available():
     """Verifica se o servidor local do PO Token Provider (bgutil) está ativo."""
@@ -457,161 +471,282 @@ def video_info():
             }), 403
         return jsonify({"error": f"Erro ao analisar o vídeo: {err_str}"}), 500
 
-@app.route('/download', methods=['POST'])
-def download_video():
-    data = request.json or {}
-    url = data.get('url', '').strip()
-    media_type = data.get('type', 'video')
-    height = data.get('height')
-    bitrate = data.get('bitrate', '192')
-    task_id = data.get('taskId') or str(uuid.uuid4())[:8]
-    
+def get_media_stream_urls(url, height=None, media_type='video'):
+    """
+    Retorna (title, video_url, audio_url, has_audio) prontos para streaming.
+    Utiliza o cache da análise de /info se disponível, ou faz extração rápida.
+    """
+    formatted, raw = get_cached_video(url)
+    if not raw:
+        pot_active = is_pot_provider_available()
+        ydl_opts = get_base_ydl_opts(use_proxy=False if pot_active else True)
+        ydl_opts['skip_download'] = True
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            raw = ydl.extract_info(url, download=False)
+
+    title = (formatted.get('title') if formatted else None) or (raw.get('title') if raw else "video")
+    formats = raw.get('formats', []) if raw else []
+
+    # Caso 1: Apenas Áudio (MP3)
+    if media_type == 'audio':
+        best_audio = None
+        for f in formats:
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url'):
+                if not best_audio or (f.get('tbr') or 0) > (best_audio.get('tbr') or 0):
+                    best_audio = f
+        audio_url = best_audio.get('url') if best_audio else None
+        return title, None, audio_url, False
+
+    # Caso 2: Vídeo (MP4)
+    target_h = None
+    if height:
+        try:
+            target_h = int(height)
+        except (ValueError, TypeError):
+            pass
+
+    # Filtra formatos de vídeo válidos
+    v_candidates = [
+        f for f in formats 
+        if f.get('vcodec') and f.get('vcodec') != 'none' and f.get('url') and f.get('height')
+    ]
+
+    chosen_video = None
+    if target_h and v_candidates:
+        # Busca formatos compatíveis com a altura solicitada (+- 15px de tolerância)
+        h_matches = [f for f in v_candidates if abs(f['height'] - target_h) <= 15]
+        if h_matches:
+            # Prioriza:
+            # 1) Formato com áudio embutido se existir
+            # 2) Formato MP4 / H.264 (avc1)
+            # 3) Maior taxa de bits (tbr)
+            h_matches.sort(key=lambda x: (
+                1 if (x.get('acodec') and x.get('acodec') != 'none') else 0,
+                1 if x.get('ext') == 'mp4' else 0,
+                x.get('tbr') or 0
+            ), reverse=True)
+            chosen_video = h_matches[0]
+
+    if not chosen_video and v_candidates:
+        # Fallback: seleciona o melhor vídeo em resolução e qualidade
+        v_candidates.sort(key=lambda x: (x.get('height') or 0, x.get('tbr') or 0), reverse=True)
+        chosen_video = v_candidates[0]
+
+    if not chosen_video:
+        return title, None, None, False
+
+    video_url = chosen_video.get('url')
+    has_audio = bool(chosen_video.get('acodec') and chosen_video.get('acodec') != 'none')
+
+    audio_url = None
+    if not has_audio:
+        # Busca o melhor áudio puro. Prioriza áudio M4A / AAC para cópia rápida e sincronia perfeita
+        m4a_candidates = [
+            f for f in formats
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url')
+            and (f.get('ext') == 'm4a' or 'mp4a' in str(f.get('acodec', '')).lower())
+        ]
+        if m4a_candidates:
+            m4a_candidates.sort(key=lambda x: x.get('tbr') or 0, reverse=True)
+            audio_url = m4a_candidates[0].get('url')
+        else:
+            all_audios = [
+                f for f in formats
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none' and f.get('url')
+            ]
+            if all_audios:
+                all_audios.sort(key=lambda x: x.get('tbr') or 0, reverse=True)
+                audio_url = all_audios[0].get('url')
+
+    return title, video_url, audio_url, has_audio
+
+def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='video', bitrate='192'):
+    """
+    Executa o FFmpeg conectado diretamente aos streams assinados do Google Video (via PO Token).
+    Mescla e transcodifica os dados diretamente no pipe stdout, sem salvar nenhum byte em disco no servidor.
+    """
+    ffmpeg_bin = get_ffmpeg_executable()
+    ua_header = 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n'
+
+    if media_type == 'audio':
+        cmd = [
+            ffmpeg_bin,
+            '-y',
+            '-loglevel', 'error',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers', ua_header,
+            '-i', audio_url,
+            '-vn',
+            '-c:a', 'libmp3lame',
+            '-b:a', f'{bitrate}k',
+            '-f', 'mp3',
+            'pipe:1'
+        ]
+        mimetype = 'audio/mpeg'
+    elif video_url and audio_url:
+        cmd = [
+            ffmpeg_bin,
+            '-y',
+            '-loglevel', 'error',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers', ua_header,
+            '-i', video_url,
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers', ua_header,
+            '-i', audio_url,
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+            '-f', 'mp4',
+            'pipe:1'
+        ]
+        mimetype = 'video/mp4'
+    else:
+        # Vídeo único que já contém áudio embutido
+        cmd = [
+            ffmpeg_bin,
+            '-y',
+            '-loglevel', 'error',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
+            '-headers', ua_header,
+            '-i', video_url,
+            '-c', 'copy',
+            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+            '-f', 'mp4',
+            'pipe:1'
+        ]
+        mimetype = 'video/mp4'
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=65536
+        )
+    except Exception as e:
+        return jsonify({"error": f"Falha ao iniciar processo de stream FFmpeg: {str(e)}"}), 500
+
+    # Valida leitura inicial para garantir que o FFmpeg conectou com sucesso
+    first_chunk = proc.stdout.read(65536)
+    if not first_chunk:
+        err_msg = ""
+        if proc.stderr:
+            try:
+                err_msg = proc.stderr.read().decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return jsonify({"error": f"Falha ao conectar aos servidores de mídia do YouTube: {err_msg or 'Fluxo vazio'}"}), 500
+
+    def generate():
+        yield first_chunk
+        try:
+            while True:
+                chunk = proc.stdout.read(65536)
+                if not chunk:
+                    break
+                yield chunk
+        except GeneratorExit:
+            # Download cancelado ou finalizado pelo navegador do cliente
+            pass
+        except Exception as ex:
+            print(f"Exceção durante transmissão do stream: {ex}")
+        finally:
+            try:
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    safe_name = "".join(c for c in download_filename if c.isalnum() or c in (' ', '-', '_', '.', '(', ')')).strip()
+    if not safe_name:
+        safe_name = "download" + (".mp3" if media_type == 'audio' else ".mp4")
+    encoded_name = urllib.parse.quote(safe_name)
+
+    headers = {
+        'Content-Type': mimetype,
+        'Content-Disposition': f'attachment; filename="{safe_name}"; filename*=UTF-8\'\'{encoded_name}',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'X-Accel-Buffering': 'no'
+    }
+
+    return Response(
+        stream_with_context(generate()),
+        headers=headers,
+        mimetype=mimetype
+    )
+
+@app.route('/download-stream', methods=['GET', 'POST'])
+def download_stream():
+    """
+    Endpoint de streaming direto de alta performance para o navegador.
+    Mescla vídeo e áudio em tempo real via FFmpeg sem tocar no disco do servidor.
+    """
+    url = request.args.get('url') or (request.json or {}).get('url', '').strip()
+    media_type = request.args.get('type') or (request.json or {}).get('type', 'video')
+    height = request.args.get('height') or (request.json or {}).get('height')
+    bitrate = request.args.get('bitrate') or (request.json or {}).get('bitrate', '192')
+    custom_title = request.args.get('title') or (request.json or {}).get('title')
+
     if not url:
         return jsonify({"error": "URL é obrigatória"}), 400
 
-    file_id = task_id
-    output_template = os.path.join(DOWNLOAD_FOLDER, f"%(title)s_{file_id}.%(ext)s")
-    ffmpeg_dir = get_ffmpeg_dir()
-
-    update_progress(task_id, {
-        'status': 'starting',
-        'percent': 5,
-        'stage': 'Conectando ao YouTube...'
-    })
-
-    def progress_hook(d):
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
-            percent = 0
-            if total and total > 0:
-                percent = min(round((downloaded / total) * 100, 1), 98.0)
-
-            speed = d.get('speed')
-            speed_str = (format_size(speed) + "/s") if speed else ""
-
-            eta = d.get('eta')
-            eta_str = f"{eta}s restantes" if (eta and eta > 0) else ""
-
-            update_progress(task_id, {
-                'status': 'downloading',
-                'percent': max(percent, 5.0),
-                'speed': speed_str,
-                'eta': eta_str,
-                'downloaded': format_size(downloaded),
-                'total': format_size(total) if total > 0 else '',
-                'stage': 'Baixando stream de mídia...'
-            })
-        elif d['status'] == 'finished':
-            update_progress(task_id, {
-                'status': 'merging',
-                'percent': 99.0,
-                'speed': '',
-                'eta': '',
-                'stage': 'Unindo e finalizando arquivo com FFmpeg...'
-            })
-
-    use_proxy_dl = os.environ.get('PROXY_DOWNLOAD', 'false').lower() in ('true', '1', 'yes')
-    ydl_opts = get_base_ydl_opts(use_proxy=use_proxy_dl)
-    ydl_opts['progress_hooks'] = [progress_hook]
-
-    if media_type == 'audio':
-        ydl_opts.update({
-            'format': 'bestaudio/best',
-            'outtmpl': output_template,
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': str(bitrate),
-            }],
-            'noplaylist': True,
-            'socket_timeout': 30,
-        })
-    else:
-        if height and ffmpeg_dir:
-            format_rule = (
-                f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/"
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]/best"
-            )
-        elif ffmpeg_dir:
-            format_rule = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
-        else:
-            format_rule = f'best[height<={height}][ext=mp4]/best[ext=mp4]/best' if height else 'best[ext=mp4]/best'
-
-        ydl_opts.update({
-            'format': format_rule,
-            'outtmpl': output_template,
-            'merge_output_format': 'mp4' if ffmpeg_dir else None,
-            'noplaylist': True,
-            'socket_timeout': 30,
-        })
-
-    if ffmpeg_dir:
-        ydl_opts['ffmpeg_location'] = ffmpeg_dir
-
-    _, cached_raw = get_cached_video(url)
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            if cached_raw:
-                try:
-                    # Aproveita a extração feita na tela de info, poupando 4 a 6 segundos!
-                    ydl.process_ie_result(copy.deepcopy(cached_raw), download=True)
-                    title = cached_raw.get('title', 'video')
-                except Exception:
-                    info = ydl.extract_info(url, download=True)
-                    title = info.get('title', 'video')
-            else:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'video')
-
-        matches = [
-            f for f in glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
-            if not f.endswith('.part') and not f.endswith('.ytdl')
-        ]
-        if not matches:
-            matches = glob.glob(os.path.join(DOWNLOAD_FOLDER, f"*{file_id}*"))
-            if not matches:
-                update_progress(task_id, {'status': 'error', 'stage': 'Arquivo não encontrado'})
-                return jsonify({"error": "Arquivo baixado não foi encontrado no servidor."}), 500
-
-        actual_file = matches[0]
-        ext = os.path.splitext(actual_file)[1] or ('.mp3' if media_type == 'audio' else '.mp4')
-        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-        download_name = f"{safe_title}{ext}"
-
-        update_progress(task_id, {
-            'status': 'finished',
-            'percent': 100,
-            'stage': 'Download finalizado! Salvando no seu dispositivo...'
-        })
-
-        @after_this_request
-        def cleanup(response):
-            try:
-                if os.path.exists(actual_file):
-                    os.remove(actual_file)
-            except Exception as ex:
-                print(f"Erro ao limpar arquivo temporário: {ex}")
-            return response
-
-        return send_file(
-            actual_file,
-            as_attachment=True,
-            download_name=download_name
-        )
-
+        title, video_url, audio_url, has_audio = get_media_stream_urls(url, height=height, media_type=media_type)
     except Exception as e:
         err_str = str(e)
-        print(f"Erro no download: {err_str}")
-        update_progress(task_id, {'status': 'error', 'stage': err_str})
         if is_youtube_bot_error(err_str):
             return jsonify({
-                "error": "O YouTube solicitou verificação anti-bot para esta requisição. Adicione o arquivo cookies.txt na pasta backend ou configure a variável YOUTUBE_COOKIES no Render.",
+                "error": "O YouTube solicitou verificação anti-bot. Tente novamente em alguns segundos ou adicione cookies.",
                 "is_bot_error": True
             }), 403
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Erro ao extrair fluxos de mídia: {err_str}"}), 500
+
+    final_title = custom_title or title or "video"
+    if media_type == 'audio':
+        if not audio_url:
+            return jsonify({"error": "Fluxo de áudio não encontrado para este vídeo."}), 404
+        filename = f"{final_title}.mp3"
+        return stream_media_ffmpeg(None, audio_url, filename, media_type='audio', bitrate=bitrate)
+    else:
+        if not video_url:
+            return jsonify({"error": "Fluxo de vídeo não encontrado na resolução solicitada."}), 404
+        filename = f"{final_title}_{height or 'HD'}.mp4"
+        return stream_media_ffmpeg(video_url, audio_url if not has_audio else None, filename, media_type='video')
+
+@app.route('/download', methods=['POST'])
+def download_video():
+    """
+    Compatibilidade com endpoint POST /download legado, agora utilizando FFmpeg stream-piping
+    para evitar esgotamento de disco e memória no servidor.
+    """
+    return download_stream()
 
 @app.route('/redirect-download', methods=['GET'])
 def redirect_download():
