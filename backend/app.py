@@ -246,10 +246,28 @@ def home():
 
 @app.route('/diag', methods=['GET'])
 def diag():
+    yt_test = None
+    try:
+        req = urllib.request.Request("https://www.youtube.com", headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=4.0) as r:
+            yt_test = f"OK {r.status}"
+    except Exception as e:
+        yt_test = f"ERR: {e}"
+
+    pot_test = None
+    try:
+        req = urllib.request.Request("http://127.0.0.1:4416/get_pot", data=b'{}', headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=4.0) as r:
+            pot_test = f"OK {r.status}"
+    except Exception as e:
+        pot_test = f"ERR: {e}"
+
     return jsonify({
         "pot_provider_ready": is_pot_provider_available(),
         "has_proxy": bool(PROXY_URL),
         "has_cookies": os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0,
+        "yt_direct_connection": yt_test,
+        "pot_get_pot_test": pot_test,
         "node_path": get_node_path(),
         "ffmpeg_path": get_ffmpeg_dir(),
         "python_version": sys.version
