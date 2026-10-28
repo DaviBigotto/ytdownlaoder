@@ -483,7 +483,7 @@ def video_info():
 
 def get_media_stream_urls(url, height=None, media_type='video'):
     """
-    Retorna (title, video_url, audio_url, has_audio) prontos para streaming.
+    Retorna (title, video_url, audio_url, has_audio, video_headers, audio_headers) prontos para streaming.
     Utiliza o cache da análise de /info se disponível, ou faz extração rápida.
     """
     formatted, raw = get_cached_video(url)
@@ -514,7 +514,8 @@ def get_media_stream_urls(url, height=None, media_type='video'):
                 if not best_audio or (f.get('tbr') or 0) > (best_audio.get('tbr') or 0):
                     best_audio = f
         audio_url = best_audio.get('url') if best_audio else None
-        return title, None, audio_url, False
+        audio_headers = best_audio.get('http_headers') if best_audio else None
+        return title, None, audio_url, False, None, audio_headers
 
     # Caso 2: Vídeo (MP4)
     target_h = None
@@ -552,12 +553,14 @@ def get_media_stream_urls(url, height=None, media_type='video'):
         chosen_video = v_candidates[0]
 
     if not chosen_video:
-        return title, None, None, False
+        return title, None, None, False, None, None
 
     video_url = chosen_video.get('url')
+    video_headers = chosen_video.get('http_headers')
     has_audio = bool(chosen_video.get('acodec') and chosen_video.get('acodec') != 'none')
 
     audio_url = None
+    audio_headers = None
     if not has_audio:
         # Busca o melhor áudio puro. Prioriza áudio M4A / AAC para cópia rápida e sincronia perfeita
         m4a_candidates = [
@@ -567,7 +570,9 @@ def get_media_stream_urls(url, height=None, media_type='video'):
         ]
         if m4a_candidates:
             m4a_candidates.sort(key=lambda x: x.get('tbr') or 0, reverse=True)
-            audio_url = m4a_candidates[0].get('url')
+            chosen_audio = m4a_candidates[0]
+            audio_url = chosen_audio.get('url')
+            audio_headers = chosen_audio.get('http_headers')
         else:
             all_audios = [
                 f for f in formats
@@ -575,27 +580,45 @@ def get_media_stream_urls(url, height=None, media_type='video'):
             ]
             if all_audios:
                 all_audios.sort(key=lambda x: x.get('tbr') or 0, reverse=True)
-                audio_url = all_audios[0].get('url')
+                chosen_audio = all_audios[0]
+                audio_url = chosen_audio.get('url')
+                audio_headers = chosen_audio.get('http_headers')
 
-    return title, video_url, audio_url, has_audio
+    return title, video_url, audio_url, has_audio, video_headers, audio_headers
 
-def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='video', bitrate='192'):
+def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='video', bitrate='192', video_headers=None, audio_headers=None):
     """
     Executa o FFmpeg conectado diretamente aos streams assinados do Google Video (via PO Token).
     Mescla e transcodifica os dados diretamente no pipe stdout, sem salvar nenhum byte em disco no servidor.
     """
     ffmpeg_bin = get_ffmpeg_executable()
-    ua_header = 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n'
+    default_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+    def format_headers(h_dict):
+        if not h_dict:
+            return f"User-Agent: {default_ua}\r\n"
+        headers_copy = dict(h_dict)
+        if not any(k.lower() == 'user-agent' for k in headers_copy.keys()):
+            headers_copy['User-Agent'] = default_ua
+        return "".join(f"{k}: {v}\r\n" for k, v in headers_copy.items())
+
+    v_headers = format_headers(video_headers)
+    a_headers = format_headers(audio_headers)
+
+    proxy_args = []
+    if PROXY_URL and PROXY_URL.startswith(('http://', 'https://')):
+        proxy_args = ['-http_proxy', PROXY_URL]
 
     if media_type == 'audio':
         cmd = [
             ffmpeg_bin,
             '-y',
             '-loglevel', 'error',
+            *proxy_args,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '5',
-            '-headers', ua_header,
+            '-headers', a_headers,
             '-i', audio_url,
             '-vn',
             '-c:a', 'libmp3lame',
@@ -609,15 +632,17 @@ def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='vid
             ffmpeg_bin,
             '-y',
             '-loglevel', 'error',
+            *proxy_args,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '5',
-            '-headers', ua_header,
+            '-headers', v_headers,
             '-i', video_url,
+            *proxy_args,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '5',
-            '-headers', ua_header,
+            '-headers', a_headers,
             '-i', audio_url,
             '-map', '0:v:0',
             '-map', '1:a:0',
@@ -636,10 +661,11 @@ def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='vid
             ffmpeg_bin,
             '-y',
             '-loglevel', 'error',
+            *proxy_args,
             '-reconnect', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '5',
-            '-headers', ua_header,
+            '-headers', v_headers,
             '-i', video_url,
             '-c', 'copy',
             '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
@@ -648,12 +674,22 @@ def stream_media_ffmpeg(video_url, audio_url, download_filename, media_type='vid
         ]
         mimetype = 'video/mp4'
 
+    env = os.environ.copy()
+    if PROXY_URL:
+        env['http_proxy'] = PROXY_URL
+        env['https_proxy'] = PROXY_URL
+        env['HTTP_PROXY'] = PROXY_URL
+        env['HTTPS_PROXY'] = PROXY_URL
+        env['ALL_PROXY'] = PROXY_URL
+        env['all_proxy'] = PROXY_URL
+
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=65536
+            bufsize=65536,
+            env=env
         )
     except Exception as e:
         return jsonify({"error": f"Falha ao iniciar processo de stream FFmpeg: {str(e)}"}), 500
@@ -738,7 +774,7 @@ def download_stream():
         return jsonify({"error": "URL é obrigatória"}), 400
 
     try:
-        title, video_url, audio_url, has_audio = get_media_stream_urls(url, height=height, media_type=media_type)
+        title, video_url, audio_url, has_audio, v_headers, a_headers = get_media_stream_urls(url, height=height, media_type=media_type)
     except Exception as e:
         err_str = str(e)
         if is_youtube_bot_error(err_str):
@@ -753,12 +789,12 @@ def download_stream():
         if not audio_url:
             return jsonify({"error": "Fluxo de áudio não encontrado para este vídeo."}), 404
         filename = f"{final_title}.mp3"
-        return stream_media_ffmpeg(None, audio_url, filename, media_type='audio', bitrate=bitrate)
+        return stream_media_ffmpeg(None, audio_url, filename, media_type='audio', bitrate=bitrate, audio_headers=a_headers)
     else:
         if not video_url:
             return jsonify({"error": "Fluxo de vídeo não encontrado na resolução solicitada."}), 404
         filename = f"{final_title}_{height or 'HD'}.mp4"
-        return stream_media_ffmpeg(video_url, audio_url if not has_audio else None, filename, media_type='video')
+        return stream_media_ffmpeg(video_url, audio_url if not has_audio else None, filename, media_type='video', video_headers=v_headers, audio_headers=a_headers)
 
 @app.route('/download', methods=['POST'])
 def download_video():
