@@ -314,7 +314,7 @@ def get_progress(task_id):
 
 @app.route('/info', methods=['POST'])
 def video_info():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     url = data.get('url', '').strip()
 
     if not url:
@@ -727,11 +727,12 @@ def download_stream():
     Endpoint de streaming direto de alta performance para o navegador.
     Mescla vídeo e áudio em tempo real via FFmpeg sem tocar no disco do servidor.
     """
-    url = request.args.get('url') or (request.json or {}).get('url', '').strip()
-    media_type = request.args.get('type') or (request.json or {}).get('type', 'video')
-    height = request.args.get('height') or (request.json or {}).get('height')
-    bitrate = request.args.get('bitrate') or (request.json or {}).get('bitrate', '192')
-    custom_title = request.args.get('title') or (request.json or {}).get('title')
+    json_data = request.get_json(silent=True) or {}
+    url = (request.args.get('url') or json_data.get('url', '')).strip()
+    media_type = request.args.get('type') or json_data.get('type') or 'video'
+    height = request.args.get('height') or json_data.get('height') or None
+    bitrate = request.args.get('bitrate') or json_data.get('bitrate') or '192'
+    custom_title = request.args.get('title') or json_data.get('title') or None
 
     if not url:
         return jsonify({"error": "URL é obrigatória"}), 400
