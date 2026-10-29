@@ -167,16 +167,28 @@ def get_ffmpeg_executable():
             return cand
     return 'ffmpeg'
 
+_pot_provider_cached_status = None
+_pot_provider_last_check = 0
+
 def is_pot_provider_available():
-    """Verifica se o servidor local do PO Token Provider (bgutil) está ativo."""
+    """Verifica se o servidor local do PO Token Provider (bgutil) está ativo com cache de 30s."""
+    global _pot_provider_cached_status, _pot_provider_last_check
+    now = time.time()
+    if _pot_provider_cached_status is not None and (now - _pot_provider_last_check < 30):
+        return _pot_provider_cached_status
+
+    status = False
     try:
         req = urllib.request.Request("http://127.0.0.1:4416/ping")
-        with urllib.request.urlopen(req, timeout=1.0) as res:
+        with urllib.request.urlopen(req, timeout=0.25) as res:
             if res.status == 200:
-                return True
+                status = True
     except Exception:
-        pass
-    return False
+        status = False
+
+    _pot_provider_cached_status = status
+    _pot_provider_last_check = now
+    return status
 
 def get_node_path():
     """Localiza o executável do Node.js para os desafios JavaScript do YouTube."""
@@ -231,6 +243,37 @@ def get_base_ydl_opts(use_proxy=None):
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts['cookiefile'] = COOKIES_FILE
 
+    return opts
+
+def get_fast_info_ydl_opts(use_proxy=None):
+    """
+    Retorna opções ultra-otimizadas do yt-dlp para extração rápida de metadados e formatos no /info.
+    Evita downloads de manifests DASH/HLS pesados, testes HTTP HEAD individuais e múltiplos clientes em fila.
+    """
+    opts = get_base_ydl_opts(use_proxy=use_proxy)
+    opts.update({
+        'skip_download': True,
+        'socket_timeout': 8,
+        'check_formats': False,
+        'youtube_include_dash_manifest': False,
+        'youtube_include_hls_manifest': False,
+        'lazy_extractors': True,
+        'no_color': True,
+    })
+
+    pot_active = is_pot_provider_available()
+    if pot_active:
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['tv_simply'],
+            }
+        }
+    else:
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['android'],
+            }
+        }
     return opts
 
 def format_size(bytes_val):
@@ -326,25 +369,29 @@ def video_info():
         return jsonify(cached_formatted)
 
     pot_active = is_pot_provider_available()
-    ydl_opts = get_base_ydl_opts(use_proxy=False if pot_active else True)
-    ydl_opts.update({
-        'skip_download': True,
-    })
+    fast_opts = get_fast_info_ydl_opts(use_proxy=False if pot_active else True)
 
     try:
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(fast_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-        except Exception as first_err:
-            # Se falhou sem proxy e temos proxy configurado, tenta com proxy como fallback
-            if PROXY_URL and not ydl_opts.get('proxy'):
-                print(f"Tentativa direta com POT falhou ({str(first_err)[:80]}). Tentando fallback com proxy...")
-                ydl_opts_proxy = get_base_ydl_opts(use_proxy=True)
-                ydl_opts_proxy.update({'skip_download': True})
-                with yt_dlp.YoutubeDL(ydl_opts_proxy) as ydl_proxy:
-                    info = ydl_proxy.extract_info(url, download=False)
-            else:
-                raise first_err
+        except Exception as fast_err:
+            print(f"Tentativa rápida falhou ({str(fast_err)[:80]}). Tentando base_opts...")
+            base_opts = get_base_ydl_opts(use_proxy=False if pot_active else True)
+            base_opts.update({'skip_download': True, 'socket_timeout': 10})
+            try:
+                with yt_dlp.YoutubeDL(base_opts) as ydl_base:
+                    info = ydl_base.extract_info(url, download=False)
+            except Exception as first_err:
+                # Se falhou sem proxy e temos proxy configurado, tenta com proxy como fallback
+                if PROXY_URL and not base_opts.get('proxy'):
+                    print(f"Tentativa base falhou. Tentando fallback com proxy...")
+                    ydl_opts_proxy = get_base_ydl_opts(use_proxy=True)
+                    ydl_opts_proxy.update({'skip_download': True})
+                    with yt_dlp.YoutubeDL(ydl_opts_proxy) as ydl_proxy:
+                        info = ydl_proxy.extract_info(url, download=False)
+                else:
+                    raise first_err
 
         title = info.get('title', 'Vídeo do YouTube')
         thumbnail = info.get('thumbnail')

@@ -37,22 +37,77 @@ export default function App() {
   const [progressData, setProgressData] = useState(null);
   const pollingRef = useRef(null);
 
-  // Busca as informações e formatos disponíveis do vídeo
+const extractYouTubeId = (urlStr) => {
+  if (!urlStr) return null;
+  const match = urlStr.match(/(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+};
+
+// Busca as informações e formatos disponíveis do vídeo com carregamento instantâneo
   const handleFetchInfo = async (e) => {
     if (e) e.preventDefault();
-    if (!url.trim()) return;
+    const cleanUrl = url.trim();
+    if (!cleanUrl) return;
 
     setLoadingInfo(true);
     setErrorMessage('');
     setSuccessMessage('');
-    setVideoData(null);
     setProgressData(null);
+
+    const vidId = extractYouTubeId(cleanUrl);
+
+    // Efeito Ultra-Rápido: Exibe preview oficial e resoluções padrão em < 100ms
+    if (vidId) {
+      const defaultVideos = [
+        { height: 1080, quality: "1080p", label: "Full HD", format: "MP4", size: "Carregando..." },
+        { height: 720, quality: "720p", label: "HD", format: "MP4", size: "Carregando..." },
+        { height: 480, quality: "480p", label: "SD", format: "MP4", size: "Carregando..." },
+        { height: 360, quality: "360p", label: "Normal", format: "MP4", size: "Carregando..." },
+      ];
+      const defaultAudios = [
+        { quality: "320 kbps", label: "Qualidade Máxima", bitrate: "320", format: "MP3", size: "Carregando..." },
+        { quality: "192 kbps", label: "Alta Qualidade", bitrate: "192", format: "MP3", size: "Carregando..." },
+        { quality: "128 kbps", label: "Qualidade Padrão", bitrate: "128", format: "MP3", size: "Carregando..." },
+      ];
+
+      setVideoData({
+        title: 'Carregando informações do vídeo...',
+        thumbnail: `https://i.ytimg.com/vi/${vidId}/hqdefault.jpg`,
+        uploader: 'YouTube',
+        duration: '',
+        videos: defaultVideos,
+        audios: defaultAudios,
+        isInstantPreview: true,
+      });
+
+      // Busca oficial oEmbed do Google (retorna em ~80ms sem bloqueio)
+      fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${vidId}&format=json`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((oe) => {
+          if (oe?.title) {
+            setVideoData((prev) => {
+              if (prev && prev.isInstantPreview) {
+                return {
+                  ...prev,
+                  title: oe.title,
+                  uploader: oe.author_name || prev.uploader,
+                  thumbnail: oe.thumbnail_url || prev.thumbnail,
+                };
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(() => {});
+    } else {
+      setVideoData(null);
+    }
 
     try {
       const response = await fetch(`${API_BASE}/info`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: cleanUrl }),
       });
 
       const data = await response.json();
@@ -60,7 +115,7 @@ export default function App() {
         throw new Error(data.error || 'Não foi possível analisar este vídeo.');
       }
 
-      setVideoData(data);
+      setVideoData({ ...data, isInstantPreview: false });
     } catch (err) {
       setErrorMessage(err.message || 'Erro de conexão com o servidor backend.');
     } finally {
@@ -352,8 +407,16 @@ export default function App() {
               )}
               
               <div className="min-w-0 flex-1 space-y-2">
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#E50914] uppercase tracking-wider">
-                  <Play className="w-3 h-3 fill-current" /> Vídeo Pronto para Download
+                <div className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider">
+                  {videoData.isInstantPreview ? (
+                    <span className="inline-flex items-center gap-1.5 text-amber-400 animate-pulse bg-amber-400/10 px-2 py-0.5 rounded-full border border-amber-400/20">
+                      <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> Sincronizando tamanhos...
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-[#E50914]">
+                      <Play className="w-3 h-3 fill-current" /> Vídeo Pronto para Download
+                    </span>
+                  )}
                 </div>
                 <h3 className="font-bold text-white text-base sm:text-lg line-clamp-2 leading-snug">
                   {videoData.title}
@@ -434,7 +497,11 @@ export default function App() {
                                 {item.format}
                               </td>
                               <td className="py-3.5 text-xs text-zinc-400 font-mono">
-                                {item.size}
+                                {item.size === 'Carregando...' ? (
+                                  <span className="text-zinc-500 text-[11px] animate-pulse italic">Calculando...</span>
+                                ) : (
+                                  item.size
+                                )}
                               </td>
                               <td className="py-3.5 pr-2 text-right">
                                 <button
@@ -521,7 +588,11 @@ export default function App() {
                               {item.format}
                             </td>
                             <td className="py-3.5 text-xs text-zinc-400 font-mono">
-                              {item.size}
+                              {item.size === 'Carregando...' ? (
+                                <span className="text-zinc-500 text-[11px] animate-pulse italic">Calculando...</span>
+                              ) : (
+                                item.size
+                              )}
                             </td>
                             <td className="py-3.5 pr-2 text-right">
                               <button
