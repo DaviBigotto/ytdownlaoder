@@ -23,7 +23,11 @@ import {
   Film,
   Archive,
   History,
-  Trash2
+  Trash2,
+  FileText,
+  Copy,
+  AlignLeft,
+  Bot
 } from 'lucide-react';
 import AdBanner from './components/AdBanner';
 import { AD_CONFIG } from './adConfig';
@@ -49,6 +53,14 @@ export default function App() {
   // Modal de Pré-visualização do Vídeo
   const [showPreviewModal, setShowPreviewModal] = useState(false);
   const [previewVideoUrl, setPreviewVideoUrl] = useState('');
+
+  // Aba ativa e Transcrição com IA
+  const [activeTab, setActiveTab] = useState('download'); // 'download' | 'transcript'
+  const [transcriptData, setTranscriptData] = useState(null);
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+  const [copiedTranscript, setCopiedTranscript] = useState(false);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [showTimestamps, setShowTimestamps] = useState(false);
 
   // Histórico Local de Vídeos Recentes
   const [recentHistory, setRecentHistory] = useState(() => {
@@ -108,6 +120,8 @@ export default function App() {
     setErrorMessage('');
     setSuccessMessage('');
     setProgressData(null);
+    setTranscriptData(null);
+    setActiveTab('download');
   };
 
   // Busca os dados do vídeo e opções sem marca d'água
@@ -123,6 +137,8 @@ export default function App() {
     setSuccessMessage('');
     setVideoData(null);
     setProgressData(null);
+    setTranscriptData(null);
+    setActiveTab('download');
 
     try {
       const response = await fetch(`${API_BASE}/api/info`, {
@@ -136,7 +152,7 @@ export default function App() {
         throw new Error(data.error || 'Não foi possível analisar este vídeo do TikTok.');
       }
 
-      setVideoData(data);
+      setVideoData({ ...data, targetUrl });
 
       // Salva no histórico
       saveToHistory({
@@ -154,6 +170,73 @@ export default function App() {
     } finally {
       setLoadingInfo(false);
     }
+  };
+
+  // Extrai roteiro / transcrição com IA
+  const handleFetchTranscript = async () => {
+    const targetUrl = videoData?.targetUrl || url.trim();
+    if (!targetUrl) return;
+
+    setLoadingTranscript(true);
+    setErrorMessage('');
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/transcript`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || 'Falha ao processar o roteiro');
+      }
+
+      setTranscriptData(data);
+    } catch (err) {
+      setErrorMessage(err.message || 'Erro ao extrair transcrição do vídeo.');
+    } finally {
+      setLoadingTranscript(false);
+    }
+  };
+
+  // Copia o texto do roteiro
+  const handleCopyTranscript = () => {
+    if (!transcriptData?.text) return;
+    const content = showTimestamps && transcriptData.segments?.length
+      ? transcriptData.segments.map(s => `[${s.start} - ${s.end}] ${s.text}`).join('\n')
+      : transcriptData.text;
+
+    navigator.clipboard.writeText(content);
+    setCopiedTranscript(true);
+    setTimeout(() => setCopiedTranscript(false), 2000);
+  };
+
+  // Copia prompt formatado para ChatGPT
+  const handleCopyPrompt = () => {
+    if (!transcriptData?.text) return;
+    const prompt = `Analise a estrutura do roteiro viral do TikTok abaixo (gancho, retenção e chamada para ação) e crie um novo roteiro persuasivo de 30 a 60 segundos com a mesma fórmula:\n\nROTEIRO ORIGINAL:\n"${transcriptData.text}"`;
+    navigator.clipboard.writeText(prompt);
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 2000);
+  };
+
+  // Baixa o roteiro em arquivo TXT
+  const handleDownloadTxt = () => {
+    if (!transcriptData?.text) return;
+    const content = showTimestamps && transcriptData.segments?.length
+      ? transcriptData.segments.map(s => `[${s.start} - ${s.end}] ${s.text}`).join('\n')
+      : transcriptData.text;
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const blobUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `${videoData?.author?.unique_id || 'tiktok'}_roteiro.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(blobUrl);
   };
 
   // Dispara o download da opção selecionada (Sem Marca d'Água, Com Marca d'Água ou MP3)
@@ -787,7 +870,45 @@ export default function App() {
 
             </div>
 
-            {/* Ações de Download Diretas (Estilo ssstik) */}
+            {/* Abas: Opções de Download vs Extrair Roteiro com IA */}
+            <div className="flex border-b border-white/[0.08] bg-[#0d0f17]">
+              <button
+                type="button"
+                onClick={() => setActiveTab('download')}
+                className={`flex-1 py-3.5 text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
+                  activeTab === 'download'
+                    ? 'border-[#00f2fe] text-white bg-white/[0.03]'
+                    : 'border-transparent text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Download className="w-4 h-4 text-[#00f2fe]" />
+                <span>Opções de Download</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('transcript');
+                  if (!transcriptData && !loadingTranscript) {
+                    handleFetchTranscript();
+                  }
+                }}
+                className={`flex-1 py-3.5 text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 border-b-2 transition-all cursor-pointer ${
+                  activeTab === 'transcript'
+                    ? 'border-[#fe2c55] text-white bg-white/[0.03]'
+                    : 'border-transparent text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Sparkles className="w-4 h-4 text-[#fe2c55]" />
+                <span>Extrair Roteiro (IA)</span>
+                <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-bold bg-[#fe2c55] text-white leading-none">
+                  Novo
+                </span>
+              </button>
+            </div>
+
+            {/* ABA 1: Ações de Download Diretas */}
+            {activeTab === 'download' && (
             <div className="p-5 sm:p-6 space-y-3">
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
                 <Download className="w-4 h-4 text-[#00f2fe]" />
@@ -907,6 +1028,153 @@ export default function App() {
               )}
 
             </div>
+            )}
+
+            {/* ABA 2: Transcrição e Roteiro com IA */}
+            {activeTab === 'transcript' && (
+              <div className="p-5 sm:p-6 space-y-4">
+                {/* Header da Aba */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/[0.08]">
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-[#fe2c55]" />
+                      Roteiro Extraído com IA (Whisper)
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      Transcreva e modele o roteiro deste vídeo viral para usar em seus próprios conteúdos.
+                    </p>
+                  </div>
+
+                  {transcriptData && (
+                    <div className="flex items-center gap-2">
+                      <span className="px-2.5 py-1 rounded-lg bg-white/[0.05] border border-white/[0.08] text-[11px] font-mono text-zinc-300">
+                        {transcriptData.wordCount || 0} palavras
+                      </span>
+                      {transcriptData.segments?.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTimestamps(!showTimestamps)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                            showTimestamps
+                              ? 'bg-[#00f2fe]/20 text-[#00f2fe] border-[#00f2fe]/40'
+                              : 'bg-white/[0.05] text-zinc-400 border-white/[0.08] hover:text-white'
+                          }`}
+                        >
+                          <AlignLeft className="w-3.5 h-3.5 inline mr-1" />
+                          {showTimestamps ? 'Ocultar Tempos' : 'Ver Tempos'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Estado: Carregando Transcrição */}
+                {loadingTranscript && (
+                  <div className="py-12 flex flex-col items-center justify-center text-center space-y-3">
+                    <Loader2 className="w-8 h-8 animate-spin text-[#fe2c55]" />
+                    <p className="text-sm font-bold text-white">Processando áudio com IA Whisper...</p>
+                    <p className="text-xs text-zinc-400 max-w-sm">
+                      Detectando padrões de fala e transcrevendo o roteiro completo com pontuação.
+                    </p>
+                  </div>
+                )}
+
+                {/* Estado: Sem Transcrição Gerada */}
+                {!loadingTranscript && !transcriptData && (
+                  <div className="py-10 flex flex-col items-center justify-center text-center space-y-4 bg-white/[0.02] rounded-2xl border border-white/[0.06] p-6">
+                    <div className="w-12 h-12 rounded-2xl bg-[#fe2c55]/15 border border-[#fe2c55]/30 flex items-center justify-center text-[#fe2c55]">
+                      <Sparkles className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h4 className="text-base font-extrabold text-white">Deseja extrair o roteiro deste vídeo?</h4>
+                      <p className="text-xs text-zinc-400 mt-1 max-w-md">
+                        Nossa inteligência artificial analisa a faixa de áudio e transcreve exatamente tudo o que foi falado.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleFetchTranscript}
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#fe2c55] to-rose-600 hover:brightness-110 text-white font-extrabold text-xs sm:text-sm shadow-lg shadow-[#fe2c55]/20 flex items-center gap-2 cursor-pointer transition-all"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      <span>Gerar Roteiro Agora</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Estado: Transcrição Pronta */}
+                {!loadingTranscript && transcriptData && (
+                  <div className="space-y-3">
+                    {/* Barra de Ações Rápidas */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleCopyTranscript}
+                        className="px-3.5 py-2 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] text-xs font-bold text-white flex items-center gap-1.5 transition-all cursor-pointer border border-white/[0.08]"
+                      >
+                        {copiedTranscript ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-emerald-400">Copiado!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5 text-[#00f2fe]" />
+                            <span>Copiar Roteiro</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleCopyPrompt}
+                        className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#fe2c55]/20 to-purple-500/20 hover:from-[#fe2c55]/30 hover:to-purple-500/30 text-xs font-bold text-white flex items-center gap-1.5 transition-all cursor-pointer border border-[#fe2c55]/40"
+                        title="Copia o roteiro formatado com prompt para o ChatGPT reescrever"
+                      >
+                        {copiedPrompt ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-emerald-400">Prompt Copiado!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Bot className="w-3.5 h-3.5 text-[#fe2c55]" />
+                            <span>Copiar para ChatGPT</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleDownloadTxt}
+                        className="px-3.5 py-2 rounded-xl bg-white/[0.07] hover:bg-white/[0.12] text-xs font-bold text-white flex items-center gap-1.5 transition-all cursor-pointer border border-white/[0.08]"
+                      >
+                        <Download className="w-3.5 h-3.5 text-zinc-300" />
+                        <span>Baixar .TXT</span>
+                      </button>
+                    </div>
+
+                    {/* Caixa de Texto do Roteiro */}
+                    <div className="p-4 sm:p-5 rounded-2xl bg-[#0a0c12] border border-white/[0.08] max-h-72 overflow-y-auto text-xs sm:text-sm leading-relaxed text-zinc-200 select-text whitespace-pre-wrap font-sans shadow-inner">
+                      {showTimestamps && transcriptData.segments?.length > 0 ? (
+                        <div className="space-y-2.5">
+                          {transcriptData.segments.map((seg, i) => (
+                            <div key={i} className="flex items-start gap-3">
+                              <span className="font-mono text-[11px] font-bold text-[#00f2fe] bg-white/[0.05] px-2 py-0.5 rounded flex-shrink-0">
+                                {seg.start}
+                              </span>
+                              <span className="text-zinc-200">{seg.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p>{transcriptData.text}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
           </div>
         )}
