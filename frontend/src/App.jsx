@@ -158,6 +158,15 @@ export default function App() {
 
   // Dispara o download da opção selecionada (Sem Marca d'Água, Com Marca d'Água ou MP3)
   const handleDownloadOption = async (option) => {
+    // Abre anúncio apenas ao clicar no botão de baixar sem marca d'água
+    if (AD_CONFIG.DIRECT_LINK_URL && (option.id === 'nowatermark' || option.id === 'nowatermark_hd')) {
+      try {
+        window.open(AD_CONFIG.DIRECT_LINK_URL, '_blank');
+      } catch (e) {
+        console.warn('Popup bloqueado pelo navegador:', e);
+      }
+    }
+
     const taskId = 'tk_' + Math.random().toString(36).substring(2, 9);
     
     setDownloadingId(option.id);
