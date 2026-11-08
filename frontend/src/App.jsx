@@ -26,7 +26,14 @@ import {
   Trash2
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  return (bytes / 1024).toFixed(1) + ' KB';
+}
 
 export default function App() {
   const [url, setUrl] = useState('');
@@ -116,7 +123,7 @@ export default function App() {
     setProgressData(null);
 
     try {
-      const response = await fetch(`${API_BASE}/info`, {
+      const response = await fetch(`${API_BASE}/api/info`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: targetUrl }),
@@ -202,7 +209,7 @@ export default function App() {
         taskId: taskId,
       };
 
-      const response = await fetch(`${API_BASE}/download`, {
+      const response = await fetch(`${API_BASE}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -213,11 +220,41 @@ export default function App() {
         throw new Error(errorData.error || 'Falha ao processar o download.');
       }
 
+      // Leitura do stream em tempo real direto pelo navegador
+      const contentLength = +response.headers.get('Content-Length') || 0;
+      const reader = response.body.getReader();
+      const chunks = [];
+      let receivedLength = 0;
+      const startTime = Date.now();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        receivedLength += value.length;
+
+        const percent = contentLength > 0
+          ? Math.min(Math.round((receivedLength / contentLength) * 100), 99)
+          : Math.min(20 + Math.round((receivedLength / (8 * 1024 * 1024)) * 75), 95);
+
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const speed = elapsedSec > 0 ? (receivedLength / elapsedSec) : 0;
+
+        setProgressData((prev) => prev ? {
+          ...prev,
+          percent,
+          speed: formatBytes(speed) + '/s',
+          downloaded: formatBytes(receivedLength),
+          total: contentLength > 0 ? formatBytes(contentLength) : prev.total,
+          stage: 'Baixando em alta velocidade...'
+        } : null);
+      }
+
       if (pollingRef.current) clearInterval(pollingRef.current);
       setProgressData((prev) => prev ? {
         ...prev,
         percent: 100,
-        stage: 'Download pronto! Salvando arquivo...',
+        stage: 'Download concluído! Salvando arquivo...',
         eta: 'Concluído'
       } : null);
 
@@ -231,7 +268,7 @@ export default function App() {
         if (match && match[1]) filename = decodeURIComponent(match[1]);
       }
 
-      const blob = await response.blob();
+      const blob = new Blob(chunks);
       const downloadBlobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadBlobUrl;
@@ -312,7 +349,7 @@ export default function App() {
         taskId: taskId,
       };
 
-      const response = await fetch(`${API_BASE}/download`, {
+      const response = await fetch(`${API_BASE}/api/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -321,6 +358,34 @@ export default function App() {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.error || 'Falha ao compactar imagens.');
+      }
+
+      const contentLength = +response.headers.get('Content-Length') || 0;
+      const reader = response.body.getReader();
+      const chunks = [];
+      let receivedLength = 0;
+      const startTime = Date.now();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        receivedLength += value.length;
+
+        const percent = contentLength > 0
+          ? Math.min(Math.round((receivedLength / contentLength) * 100), 99)
+          : Math.min(25 + Math.round((receivedLength / (5 * 1024 * 1024)) * 70), 95);
+
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const speed = elapsedSec > 0 ? (receivedLength / elapsedSec) : 0;
+
+        setProgressData((prev) => prev ? {
+          ...prev,
+          percent,
+          speed: formatBytes(speed) + '/s',
+          downloaded: formatBytes(receivedLength),
+          stage: 'Compactando e baixando ZIP...'
+        } : null);
       }
 
       if (pollingRef.current) clearInterval(pollingRef.current);
@@ -338,7 +403,7 @@ export default function App() {
         if (match && match[1]) filename = decodeURIComponent(match[1]);
       }
 
-      const blob = await response.blob();
+      const blob = new Blob(chunks);
       const downloadBlobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadBlobUrl;

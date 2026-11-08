@@ -127,6 +127,7 @@ def get_progress(task_id):
     return jsonify(data)
 
 @app.route('/info', methods=['POST'])
+@app.route('/api/info', methods=['POST'])
 def video_info():
     data = request.json or {}
     raw_url = data.get('url', '').strip()
@@ -314,6 +315,7 @@ def video_info():
         }), 400
 
 @app.route('/download', methods=['POST'])
+@app.route('/api/download', methods=['POST'])
 def download_media():
     data = request.json or {}
     url = data.get('url', '').strip()
