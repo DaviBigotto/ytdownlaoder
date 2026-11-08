@@ -1,4 +1,6 @@
 flask
 flask-cors
+requests
 yt-dlp
 gunicorn
+curl-cffi

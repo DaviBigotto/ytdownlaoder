@@ -1,24 +1,29 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Download, 
   Link as LinkIcon, 
   Loader2, 
   CheckCircle, 
   AlertCircle, 
-  Film, 
   Music, 
-  Clock, 
-  User, 
-  ChevronDown, 
-  ChevronUp,
-  Sparkles,
-  Play,
-  ArrowRight,
-  ShieldCheck,
-  Zap,
-  HardDrive,
+  Sparkles, 
+  Play, 
+  ArrowRight, 
+  ShieldCheck, 
+  Zap, 
+  Heart, 
+  MessageCircle, 
+  Eye, 
+  Clipboard, 
+  X, 
+  Image as ImageIcon,
+  Activity,
   Timer,
-  Activity
+  Check,
+  Film,
+  Archive,
+  History,
+  Trash2
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -27,20 +32,82 @@ export default function App() {
   const [url, setUrl] = useState('');
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [videoData, setVideoData] = useState(null);
-  const [activeTab, setActiveTab] = useState('video'); // 'video' | 'audio'
-  const [showAllVideos, setShowAllVideos] = useState(false);
-  const [downloadingKey, setDownloadingKey] = useState(null);
+  const [downloadingId, setDownloadingId] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [copiedClipboard, setCopiedClipboard] = useState(false);
+
+  // Modal de Pré-visualização do Vídeo
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [previewVideoUrl, setPreviewVideoUrl] = useState('');
+
+  // Histórico Local de Vídeos Recentes
+  const [recentHistory, setRecentHistory] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('tikdown_history') || '[]');
+    } catch {
+      return [];
+    }
+  });
 
   // Estado da Barra de Progresso em Tempo Real
   const [progressData, setProgressData] = useState(null);
   const pollingRef = useRef(null);
 
-  // Busca as informações e formatos disponíveis do vídeo
-  const handleFetchInfo = async (e) => {
+  // Salva histórico no localStorage
+  const saveToHistory = (item) => {
+    setRecentHistory((prev) => {
+      const filtered = prev.filter((p) => p.url !== item.url);
+      const updated = [item, ...filtered].slice(0, 6);
+      try {
+        localStorage.setItem('tikdown_history', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Erro ao salvar histórico:', e);
+      }
+      return updated;
+    });
+  };
+
+  // Limpa o histórico
+  const handleClearHistory = () => {
+    setRecentHistory([]);
+    try {
+      localStorage.removeItem('tikdown_history');
+    } catch (e) {
+      console.warn('Erro ao limpar histórico:', e);
+    }
+  };
+
+  // Cola link diretamente da área de transferência
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setUrl(text);
+        setCopiedClipboard(true);
+        setTimeout(() => setCopiedClipboard(false), 2000);
+      }
+    } catch (err) {
+      console.warn('Permissão de área de transferência negada ou indisponível:', err);
+    }
+  };
+
+  // Limpa o input
+  const handleClear = () => {
+    setUrl('');
+    setVideoData(null);
+    setErrorMessage('');
+    setSuccessMessage('');
+    setProgressData(null);
+  };
+
+  // Busca os dados do vídeo e opções sem marca d'água
+  const handleFetchInfo = async (e, customUrl) => {
     if (e) e.preventDefault();
-    if (!url.trim()) return;
+    const targetUrl = (customUrl || url).trim();
+    if (!targetUrl) return;
+
+    if (customUrl) setUrl(customUrl);
 
     setLoadingInfo(true);
     setErrorMessage('');
@@ -52,45 +119,54 @@ export default function App() {
       const response = await fetch(`${API_BASE}/info`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim() }),
+        body: JSON.stringify({ url: targetUrl }),
       });
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || 'Não foi possível analisar este vídeo.');
+        throw new Error(data.error || 'Não foi possível analisar este vídeo do TikTok.');
       }
 
       setVideoData(data);
+
+      // Salva no histórico
+      saveToHistory({
+        id: data.id,
+        title: data.title,
+        cover: data.cover,
+        url: targetUrl,
+        nickname: data.author?.nickname,
+        unique_id: data.author?.unique_id,
+        timestamp: Date.now()
+      });
+
     } catch (err) {
-      setErrorMessage(err.message || 'Erro de conexão com o servidor backend.');
+      setErrorMessage(err.message || 'Erro ao conectar com o servidor backend.');
     } finally {
       setLoadingInfo(false);
     }
   };
 
-  // Dispara o download da opção selecionada com rastreamento de progresso
-  const handleDownloadItem = async (item, type) => {
-    const itemKey = type === 'video' ? `video_${item.height}` : `audio_${item.bitrate}`;
-    const taskId = 'dl_' + Math.random().toString(36).substring(2, 9);
+  // Dispara o download da opção selecionada (Sem Marca d'Água, Com Marca d'Água ou MP3)
+  const handleDownloadOption = async (option) => {
+    const taskId = 'tk_' + Math.random().toString(36).substring(2, 9);
     
-    setDownloadingKey(itemKey);
+    setDownloadingId(option.id);
     setErrorMessage('');
     setSuccessMessage('');
 
-    // Inicia o card de progresso
     setProgressData({
       taskId,
-      quality: item.quality,
-      type,
-      percent: 5,
+      label: option.label,
+      format: option.format,
+      percent: 15,
       speed: '',
-      eta: 'Calculando...',
+      eta: 'Conectando...',
       downloaded: '',
-      total: item.size || '',
-      stage: 'Conectando ao servidor...',
+      total: option.size || '',
+      stage: 'Conectando ao CDN de alta velocidade...',
     });
 
-    // Inicia polling de progresso a cada 600ms
     if (pollingRef.current) clearInterval(pollingRef.current);
     pollingRef.current = setInterval(async () => {
       try {
@@ -101,7 +177,7 @@ export default function App() {
             if (!prev) return null;
             return {
               ...prev,
-              percent: Math.max(prev.percent, p.percent || 5),
+              percent: Math.max(prev.percent, p.percent || 15),
               speed: p.speed || prev.speed,
               eta: p.eta || prev.eta,
               downloaded: p.downloaded || prev.downloaded,
@@ -111,16 +187,18 @@ export default function App() {
           });
         }
       } catch (err) {
-        // Ignora erros transitórios de polling
+        // Ignora erros temporários de rede
       }
-    }, 600);
+    }, 400);
 
     try {
       const payload = {
         url: url.trim(),
-        type: type,
-        height: type === 'video' ? item.height : undefined,
-        bitrate: type === 'audio' ? item.bitrate : undefined,
+        downloadUrl: option.url,
+        optionId: option.id,
+        type: option.type,
+        title: videoData.title,
+        author: videoData.author?.unique_id?.replace('@', '') || 'tiktok',
         taskId: taskId,
       };
 
@@ -132,10 +210,9 @@ export default function App() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Falha ao baixar arquivo.');
+        throw new Error(errorData.error || 'Falha ao processar o download.');
       }
 
-      // Parar polling e marcar 100%
       if (pollingRef.current) clearInterval(pollingRef.current);
       setProgressData((prev) => prev ? {
         ...prev,
@@ -144,7 +221,10 @@ export default function App() {
         eta: 'Concluído'
       } : null);
 
-      let filename = type === 'audio' ? `${videoData.title}.mp3` : `${videoData.title}.mp4`;
+      let filename = option.type === 'audio' 
+        ? `${videoData.author?.unique_id || 'tiktok'}_audio.mp3`
+        : `${videoData.author?.unique_id || 'tiktok'}_sem_marca.mp4`;
+
       const disposition = response.headers.get('Content-Disposition');
       if (disposition && disposition.includes('filename=')) {
         const match = disposition.match(/filename\*?=['"]?(?:UTF-8'')?([^"';]+)['"]?/i);
@@ -152,18 +232,17 @@ export default function App() {
       }
 
       const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
+      const downloadBlobUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = downloadUrl;
+      a.href = downloadBlobUrl;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(downloadUrl);
+      window.URL.revokeObjectURL(downloadBlobUrl);
 
-      setSuccessMessage(`Download de "${item.quality}" concluído com sucesso!`);
+      setSuccessMessage(`Download de "${option.label}" concluído com sucesso!`);
       
-      // Fecha a barra de progresso após 3 segundos
       setTimeout(() => {
         setProgressData(null);
       }, 3500);
@@ -171,74 +250,182 @@ export default function App() {
     } catch (err) {
       if (pollingRef.current) clearInterval(pollingRef.current);
       setProgressData(null);
-      setErrorMessage(err.message || 'Erro durante o download.');
+      setErrorMessage(err.message || 'Erro durante o download do vídeo.');
     } finally {
-      setDownloadingKey(null);
+      setDownloadingId(null);
     }
   };
 
-  const visibleVideos = videoData?.videos 
-    ? (showAllVideos ? videoData.videos : videoData.videos.slice(0, 5))
-    : [];
-
-  const renderQualityBadge = (quality) => {
-    const isUltra = quality.includes('4K') || quality.includes('2K');
-    const isFHD = quality.includes('1080');
+  // Download de todas as imagens em ZIP
+  const handleDownloadAllImagesZip = async () => {
+    if (!videoData?.images?.length) return;
+    const taskId = 'zip_' + Math.random().toString(36).substring(2, 9);
     
-    if (isUltra) {
-      return (
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wider bg-red-600/20 text-red-400 border border-red-500/30">
-          <Sparkles className="w-2.5 h-2.5 text-red-400" />
-          {quality}
-        </span>
-      );
+    setDownloadingId('all_images');
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    setProgressData({
+      taskId,
+      label: 'Fotos do Carrossel (.ZIP)',
+      format: 'ZIP',
+      percent: 15,
+      speed: '',
+      eta: 'Compactando...',
+      downloaded: '',
+      total: `${videoData.images.length} fotos`,
+      stage: 'Baixando e compactando imagens em arquivo ZIP...',
+    });
+
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/progress/${taskId}`);
+        if (res.ok) {
+          const p = await res.json();
+          setProgressData((prev) => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              percent: Math.max(prev.percent, p.percent || 15),
+              speed: p.speed || prev.speed,
+              eta: p.eta || prev.eta,
+              downloaded: p.downloaded || prev.downloaded,
+              total: p.total || prev.total,
+              stage: p.stage || prev.stage,
+            };
+          });
+        }
+      } catch (err) {
+        // Ignora erros temporários
+      }
+    }, 400);
+
+    try {
+      const payload = {
+        url: url.trim(),
+        optionId: 'all_images',
+        type: 'zip',
+        images: videoData.images,
+        title: videoData.title,
+        author: videoData.author?.unique_id?.replace('@', '') || 'tiktok',
+        taskId: taskId,
+      };
+
+      const response = await fetch(`${API_BASE}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Falha ao compactar imagens.');
+      }
+
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      setProgressData((prev) => prev ? {
+        ...prev,
+        percent: 100,
+        stage: 'Arquivo ZIP pronto! Baixando...',
+        eta: 'Concluído'
+      } : null);
+
+      let filename = `${videoData.author?.unique_id || 'tiktok'}_fotos.zip`;
+      const disposition = response.headers.get('Content-Disposition');
+      if (disposition && disposition.includes('filename=')) {
+        const match = disposition.match(/filename\*?=['"]?(?:UTF-8'')?([^"';]+)['"]?/i);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+      }
+
+      const blob = await response.blob();
+      const downloadBlobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadBlobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(downloadBlobUrl);
+
+      setSuccessMessage(`Todas as ${videoData.images.length} fotos foram baixadas em ZIP!`);
+      setTimeout(() => setProgressData(null), 3500);
+
+    } catch (err) {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      setProgressData(null);
+      setErrorMessage(err.message || 'Erro ao baixar o arquivo ZIP.');
+    } finally {
+      setDownloadingId(null);
     }
-    if (isFHD) {
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold tracking-wider bg-zinc-800 text-zinc-200 border border-zinc-700">
-          {quality}
-        </span>
-      );
+  };
+
+  // Download direto de imagem do carrossel
+  const handleDownloadImage = async (imgUrl, index) => {
+    try {
+      const resp = await fetch(imgUrl);
+      const blob = await resp.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `tiktok_foto_${index + 1}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      window.open(imgUrl, '_blank');
     }
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold text-zinc-400 border border-zinc-800 bg-zinc-900/60">
-        {quality}
-      </span>
-    );
+  };
+
+  // Abre o modal de pré-visualização do vídeo
+  const handleOpenPreview = () => {
+    const cleanVideoOption = videoData?.options?.find(o => o.id === 'nowatermark' || o.id === 'nowatermark_hd');
+    if (cleanVideoOption?.url) {
+      setPreviewVideoUrl(cleanVideoOption.url);
+      setShowPreviewModal(true);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-[#0b0c0e] text-zinc-100 flex flex-col font-sans selection:bg-[#E50914] selection:text-white relative cinema-glow-bg">
+    <div className="min-h-screen bg-[#090a0f] text-zinc-100 flex flex-col font-sans selection:bg-[#fe2c55] selection:text-white relative tiktok-glow-bg">
       
       {/* Navbar Superior */}
-      <header className="border-b border-white/[0.06] bg-[#0b0c0e]/80 backdrop-blur-xl sticky top-0 z-50">
+      <header className="border-b border-white/[0.06] bg-[#090a0f]/80 backdrop-blur-xl sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3.5 group cursor-pointer">
-            <div className="relative w-11 h-11 rounded-xl overflow-hidden border border-white/10 shadow-lg shadow-black/80 flex items-center justify-center bg-black group-hover:border-red-500/40 transition-all duration-300">
-              <img 
-                src="/logo.jpg" 
-                alt="StreamDown Logo" 
-                className="w-full h-full object-cover scale-105 group-hover:scale-110 transition-transform duration-300"
-              />
+          
+          {/* Logo TikDown */}
+          <div className="flex items-center gap-3 group cursor-pointer" onClick={() => window.location.reload()}>
+            <div className="relative w-11 h-11 rounded-2xl overflow-hidden border border-white/10 shadow-lg shadow-black/80 flex items-center justify-center bg-gradient-to-br from-[#090a0f] to-[#12131a] group-hover:border-[#00f2fe]/50 transition-all duration-300">
+              <svg className="w-6 h-6 text-[#00f2fe] drop-shadow-[0_0_8px_rgba(0,242,254,0.6)]" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.89 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.35 0 .68.06 1 .17V9.45a6.38 6.38 0 0 0-1-.08A6.34 6.34 0 0 0 3 15.71a6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.34-6.34V9.05a8.31 8.31 0 0 0 3.91 1.05V6.69z" />
+              </svg>
             </div>
-            <span className="font-extrabold text-xl sm:text-2xl tracking-tighter text-white flex items-center gap-0.5">
-              STREAM<span className="text-[#E50914]">DOWN</span>
-            </span>
+            <div>
+              <span className="font-extrabold text-xl sm:text-2xl tracking-tight text-white flex items-center gap-0.5">
+                TIK<span className="text-[#00f2fe]">DOWN</span>
+              </span>
+              <span className="block text-[10px] uppercase font-bold tracking-widest text-[#fe2c55]">
+                Sem Marca d'Água
+              </span>
+            </div>
           </div>
 
+          {/* Badges de Destaque */}
           <div className="flex items-center gap-2">
             <div className="hidden md:flex items-center gap-3 text-xs text-zinc-400 font-medium mr-2">
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.03] border border-white/[0.08]">
-                <Zap className="w-3.5 h-3.5 text-[#E50914]" /> Alta Velocidade
+                <Zap className="w-3.5 h-3.5 text-[#00f2fe]" /> Instantâneo
               </span>
               <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/[0.03] border border-white/[0.08]">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Sem Anúncios
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Sem Marca d'Água
               </span>
             </div>
-            <span className="px-2.5 py-1 text-[11px] font-bold tracking-wider rounded bg-[#E50914]/20 text-[#E50914] border border-[#E50914]/30 uppercase">
-              4K UHD
+            <span className="px-3 py-1 text-[11px] font-bold tracking-wider rounded-full bg-gradient-to-r from-[#00f2fe]/20 to-[#fe2c55]/20 text-white border border-white/10 uppercase">
+              100% Grátis
             </span>
           </div>
+
         </div>
       </header>
 
@@ -247,45 +434,88 @@ export default function App() {
         
         {/* Hero Section */}
         <div className="text-center max-w-2xl mb-10 space-y-3.5">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.08] text-xs font-semibold text-zinc-300 mb-2">
+            <Sparkles className="w-3.5 h-3.5 text-[#00f2fe]" />
+            <span>Downloader do TikTok em Alta Definição (HD)</span>
+          </div>
+
           <h1 className="text-3xl sm:text-5xl font-extrabold text-white tracking-tight leading-[1.15]">
-            Baixe seus vídeos favoritos <br className="hidden sm:inline" />
-            com <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#E50914] via-red-500 to-rose-400">qualidade máxima</span>.
+            Baixe vídeos do TikTok <br className="hidden sm:inline" />
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00f2fe] via-sky-400 to-[#fe2c55]">
+              sem marca d'água
+            </span>.
           </h1>
           
           <p className="text-zinc-400 text-sm sm:text-base leading-relaxed">
-            Cole a URL abaixo para acessar o catálogo de resoluções originais, sem perdas e sem limites de download.
+            Cole o link do TikTok (app ou navegador) para baixar o vídeo limpo em MP4 ou extrair apenas o áudio em MP3.
           </p>
         </div>
 
-        {/* Input Bar Estilo Netflix */}
+        {/* Input Bar Estilo Moderno */}
         <form onSubmit={handleFetchInfo} className="w-full max-w-2xl mb-8 group">
-          <div className="relative flex flex-col sm:flex-row gap-2.5 p-2 bg-[#13151b] rounded-2xl border border-white/[0.1] shadow-2xl shadow-black/80 focus-within:border-[#E50914]/60 focus-within:shadow-[0_0_35px_-5px_rgba(229,9,20,0.25)] transition-all duration-300">
+          <div className="relative flex flex-col sm:flex-row gap-2.5 p-2 bg-[#12141c] rounded-2xl border border-white/[0.1] shadow-2xl shadow-black/80 focus-within:border-[#00f2fe]/60 focus-within:shadow-[0_0_35px_-5px_rgba(0,242,254,0.25)] transition-all duration-300">
+            
             <div className="relative flex-1 flex items-center">
-              <div className="absolute left-4 text-zinc-500 group-focus-within:text-[#E50914] transition-colors duration-200">
+              <div className="absolute left-4 text-zinc-500 group-focus-within:text-[#00f2fe] transition-colors duration-200">
                 <LinkIcon className="w-5 h-5" />
               </div>
+
               <input
                 type="text"
-                placeholder="Cole o link do YouTube aqui (ex: https://youtube.com/watch?v=...)"
+                placeholder="Cole o link do TikTok aqui (ex: https://vm.tiktok.com/...)"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 disabled={loadingInfo}
-                className="w-full pl-12 pr-4 py-3.5 bg-transparent text-white placeholder-zinc-500 text-sm focus:outline-none font-medium"
+                className="w-full pl-12 pr-20 py-3.5 bg-transparent text-white placeholder-zinc-500 text-sm focus:outline-none font-medium"
               />
+
+              {/* Botões Utilitários dentro do input: Colar e Limpar */}
+              <div className="absolute right-2 flex items-center gap-1">
+                {url ? (
+                  <button
+                    type="button"
+                    onClick={handleClear}
+                    title="Limpar campo"
+                    className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handlePaste}
+                    title="Colar da área de transferência"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-zinc-300 hover:text-white text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    {copiedClipboard ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400">Colado</span>
+                      </>
+                    ) : (
+                      <>
+                        <Clipboard className="w-3.5 h-3.5 text-[#00f2fe]" />
+                        <span>Colar</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
+
             <button
               type="submit"
               disabled={loadingInfo || !url.trim()}
-              className="px-7 py-3.5 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-50 text-white font-bold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-[#E50914]/30 active:scale-[0.98] text-sm tracking-wide cursor-pointer disabled:cursor-not-allowed"
+              className="px-8 py-3.5 bg-gradient-to-r from-[#00f2fe] to-[#fe2c55] hover:brightness-110 disabled:opacity-40 text-black font-extrabold rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-[#00f2fe]/20 active:scale-[0.98] text-sm tracking-wide cursor-pointer disabled:cursor-not-allowed"
             >
               {loadingInfo ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Analisando...</span>
+                  <Loader2 className="w-4 h-4 animate-spin text-black" />
+                  <span>Obtendo...</span>
                 </>
               ) : (
                 <>
-                  <span>Analisar</span>
+                  <span>Baixar</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -295,22 +525,9 @@ export default function App() {
 
         {/* Alertas de Feedback */}
         {errorMessage && (
-          <div className="w-full max-w-2xl mb-6 p-4 rounded-2xl bg-red-950/40 border border-red-800/60 text-red-300 flex flex-col gap-2 animate-in fade-in duration-200">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-[#E50914]" />
-              <div className="text-sm font-medium leading-relaxed">{errorMessage}</div>
-            </div>
-            {errorMessage.includes("anti-bot") && (
-              <div className="mt-2 pt-3 border-t border-red-800/40 text-xs text-zinc-300 space-y-1.5 pl-8">
-                <p className="font-semibold text-red-400">💡 Como liberar o download agora:</p>
-                <ol className="list-decimal list-inside space-y-1 text-zinc-400">
-                  <li>Instale no Chrome a extensão gratuita <strong className="text-white">Get cookies.txt LOCALLY</strong>.</li>
-                  <li>Abra o YouTube logado na sua conta normal.</li>
-                  <li>Clique na extensão e escolha <strong className="text-white">Export</strong>.</li>
-                  <li>Salve o arquivo como <strong className="text-white font-mono">cookies.txt</strong> na pasta <code className="text-red-400 bg-black/60 px-1 rounded">backend/</code>.</li>
-                </ol>
-              </div>
-            )}
+          <div className="w-full max-w-2xl mb-6 p-4 rounded-2xl bg-red-950/40 border border-red-800/60 text-red-300 flex items-start gap-3 animate-in fade-in duration-200">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-[#fe2c55]" />
+            <div className="text-sm font-medium leading-relaxed">{errorMessage}</div>
           </div>
         )}
 
@@ -321,34 +538,31 @@ export default function App() {
           </div>
         )}
 
-        {/* CARD DE PROGRESSO EM TEMPO REAL ESTILO NETFLIX */}
+        {/* CARD DE PROGRESSO EM TEMPO REAL */}
         {progressData && (
-          <div className="w-full max-w-2xl mb-6 p-5 sm:p-6 bg-[#181a22] border border-[#E50914]/40 rounded-3xl shadow-2xl shadow-red-950/40 animate-in fade-in slide-in-from-top-3 duration-300 relative overflow-hidden">
-            {/* Background Glow */}
-            <div className="absolute -top-10 -right-10 w-40 h-40 bg-[#E50914]/10 rounded-full blur-3xl pointer-events-none"></div>
+          <div className="w-full max-w-2xl mb-6 p-5 sm:p-6 bg-[#13151f] border border-[#00f2fe]/40 rounded-3xl shadow-2xl shadow-[#00f2fe]/10 animate-in fade-in slide-in-from-top-3 duration-300 relative overflow-hidden">
+            <div className="absolute -top-10 -right-10 w-40 h-40 bg-[#00f2fe]/10 rounded-full blur-3xl pointer-events-none"></div>
 
-            {/* Cabeçalho do Progresso */}
             <div className="flex items-center justify-between mb-3.5">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-[#E50914]/15 border border-[#E50914]/30 flex items-center justify-center text-[#E50914]">
+                <div className="w-8 h-8 rounded-lg bg-[#00f2fe]/15 border border-[#00f2fe]/30 flex items-center justify-center text-[#00f2fe]">
                   {progressData.percent >= 100 ? (
                     <CheckCircle className="w-4 h-4 text-emerald-400" />
                   ) : (
-                    <Loader2 className="w-4 h-4 animate-spin text-[#E50914]" />
+                    <Loader2 className="w-4 h-4 animate-spin text-[#00f2fe]" />
                   )}
                 </div>
                 <div>
                   <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                    <span>Baixando em {progressData.quality}</span>
-                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300">
-                      {progressData.type === 'audio' ? 'MP3' : 'MP4'}
+                    <span>{progressData.label}</span>
+                    <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-bold">
+                      {progressData.format}
                     </span>
                   </h4>
                   <p className="text-xs text-zinc-400 mt-0.5">{progressData.stage}</p>
                 </div>
               </div>
 
-              {/* Porcentagem em Destaque */}
               <div className="text-right">
                 <span className="font-extrabold text-2xl tracking-tight text-white font-mono">
                   {progressData.percent}%
@@ -356,20 +570,18 @@ export default function App() {
               </div>
             </div>
 
-            {/* Barra de Progresso Animada */}
             <div className="w-full h-2.5 bg-black/60 rounded-full overflow-hidden p-0.5 border border-white/[0.08] mb-3">
               <div
-                className="h-full bg-gradient-to-r from-red-600 via-[#E50914] to-rose-400 rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(229,9,20,0.8)]"
+                className="h-full bg-gradient-to-r from-[#00f2fe] via-sky-400 to-[#fe2c55] rounded-full transition-all duration-300 ease-out shadow-[0_0_12px_rgba(0,242,254,0.8)]"
                 style={{ width: `${Math.max(progressData.percent, 3)}%` }}
               ></div>
             </div>
 
-            {/* Metadados: Velocidade, Tempo Restante e Downloaded */}
             <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 font-medium pt-1">
               <div className="flex items-center gap-4">
                 {progressData.speed && (
                   <span className="flex items-center gap-1.5 text-zinc-300">
-                    <Activity className="w-3.5 h-3.5 text-[#E50914]" />
+                    <Activity className="w-3.5 h-3.5 text-[#00f2fe]" />
                     <span>{progressData.speed}</span>
                   </span>
                 )}
@@ -392,241 +604,375 @@ export default function App() {
           </div>
         )}
 
-        {/* Card do Vídeo e Tabela de Qualidades */}
+        {/* CARD DO VÍDEO DO TIKTOK COM OPÇÕES DIRETAS (ESTILO SSSTIK / TIKWM) */}
         {videoData && (
-          <div className="w-full max-w-2xl bg-[#13151b] border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl shadow-black/90 animate-in fade-in slide-in-from-bottom-3 duration-300">
+          <div className="w-full max-w-2xl bg-[#12141c] border border-white/[0.08] rounded-3xl overflow-hidden shadow-2xl shadow-black/90 animate-in fade-in slide-in-from-bottom-3 duration-300 mb-8">
             
-            {/* Header com Thumbnail e Dados do Vídeo */}
-            <div className="relative p-5 sm:p-6 bg-gradient-to-b from-[#181a22] to-[#13151b] border-b border-white/[0.06] flex flex-col sm:flex-row items-start sm:items-center gap-4">
-              {videoData.thumbnail && (
-                <div className="relative w-full sm:w-36 aspect-video sm:aspect-square rounded-2xl overflow-hidden flex-shrink-0 border border-white/[0.1] bg-black shadow-lg">
+            {/* Header com Preview e Perfil do Criador */}
+            <div className="p-5 sm:p-6 bg-gradient-to-b from-[#181a24] to-[#12141c] border-b border-white/[0.06] flex flex-col sm:flex-row items-start gap-5">
+              
+              {/* Thumbnail / Capa vertical do TikTok com botão de Prévia */}
+              {videoData.cover && (
+                <div 
+                  onClick={handleOpenPreview}
+                  className="relative w-full sm:w-36 aspect-[9/16] sm:aspect-[3/4] rounded-2xl overflow-hidden flex-shrink-0 border border-white/[0.1] bg-black shadow-xl group cursor-pointer"
+                  title="Clique para assistir prévia"
+                >
                   <img
-                    src={videoData.thumbnail}
+                    src={videoData.cover}
                     alt={videoData.title}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   />
+
+                  {/* Overlay Play Hover */}
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <div className="w-12 h-12 rounded-full bg-[#00f2fe]/90 flex items-center justify-center text-black shadow-lg">
+                      <Play className="w-6 h-6 fill-black ml-0.5" />
+                    </div>
+                  </div>
+
                   {videoData.duration && (
-                    <span className="absolute bottom-1.5 right-1.5 bg-black/85 backdrop-blur-md text-[10px] text-zinc-200 px-2 py-0.5 rounded font-mono font-bold tracking-tight">
+                    <span className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-[10px] text-zinc-200 px-2 py-0.5 rounded-md font-mono font-bold tracking-tight">
                       {videoData.duration}
                     </span>
                   )}
-                </div>
-              )}
-              
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#E50914] uppercase tracking-wider">
-                  <Play className="w-3 h-3 fill-current" /> Vídeo Pronto para Download
-                </div>
-                <h3 className="font-bold text-white text-base sm:text-lg line-clamp-2 leading-snug">
-                  {videoData.title}
-                </h3>
-                <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 pt-0.5">
-                  <span className="flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5 text-zinc-500" /> {videoData.uploader}
-                  </span>
-                  {videoData.duration && (
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-zinc-500" /> {videoData.duration}
+                  {videoData.is_slideshow && (
+                    <span className="absolute top-2 left-2 bg-[#fe2c55] text-[10px] text-white px-2 py-0.5 rounded font-bold uppercase tracking-wider">
+                      Fotos
                     </span>
                   )}
                 </div>
-              </div>
-            </div>
+              )}
 
-            {/* Abas Vídeo / Áudio */}
-            <div className="flex border-b border-white/[0.06] bg-[#0e1015]">
-              <button
-                type="button"
-                onClick={() => setActiveTab('video')}
-                className={`flex-1 py-4 font-bold text-xs sm:text-sm tracking-wide text-center border-b-2 transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                  activeTab === 'video'
-                    ? 'border-[#E50914] text-white bg-white/[0.02]'
-                    : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.01]'
-                }`}
-              >
-                <Film className="w-4 h-4 text-[#E50914]" />
-                Vídeo (MP4)
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('audio')}
-                className={`flex-1 py-4 font-bold text-xs sm:text-sm tracking-wide text-center border-b-2 transition-all flex items-center justify-center gap-2 cursor-pointer ${
-                  activeTab === 'audio'
-                    ? 'border-[#E50914] text-white bg-white/[0.02]'
-                    : 'border-transparent text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.01]'
-                }`}
-              >
-                <Music className="w-4 h-4 text-[#E50914]" />
-                Áudio (MP3)
-              </button>
-            </div>
-
-            {/* Tabela de Qualidades */}
-            <div className="p-4 sm:p-6">
-              
-              {/* Opções de Vídeo */}
-              {activeTab === 'video' && (
-                <div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead>
-                        <tr className="text-[11px] uppercase tracking-wider text-zinc-500 border-b border-white/[0.06] pb-3">
-                          <th className="pb-3.5 font-bold pl-2">Qualidade</th>
-                          <th className="pb-3.5 font-bold">Formato</th>
-                          <th className="pb-3.5 font-bold">Tamanho Est.</th>
-                          <th className="pb-3.5 font-bold text-right pr-2">Download</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.04]">
-                        {visibleVideos.map((item, idx) => {
-                          const itemKey = `video_${item.height}`;
-                          const isDownloading = downloadingKey === itemKey;
-
-                          return (
-                            <tr key={idx} className="hover:bg-white/[0.02] transition-colors group">
-                              <td className="py-3.5 pl-2 font-medium text-white flex items-center gap-2.5">
-                                {renderQualityBadge(item.quality)}
-                                {item.label && (
-                                  <span className="text-[10px] text-zinc-400 font-medium">
-                                    {item.label}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-3.5 text-xs font-mono text-zinc-400 uppercase font-semibold">
-                                {item.format}
-                              </td>
-                              <td className="py-3.5 text-xs text-zinc-400 font-mono">
-                                {item.size}
-                              </td>
-                              <td className="py-3.5 pr-2 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleDownloadItem(item, 'video')}
-                                  disabled={downloadingKey !== null}
-                                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                                >
-                                  {isDownloading ? (
-                                    <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      <span>Processando...</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Download className="w-3.5 h-3.5" />
-                                      <span>Baixar</span>
-                                    </>
-                                  )}
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Toggle Mostrar Mais / Menos */}
-                  {videoData.videos.length > 5 && (
-                    <div className="mt-4 pt-3 border-t border-white/[0.06] text-center">
-                      <button
-                        type="button"
-                        onClick={() => setShowAllVideos(!showAllVideos)}
-                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-zinc-400 hover:text-white transition-colors py-1 px-3 rounded-lg hover:bg-white/[0.04]"
-                      >
-                        {showAllVideos ? (
-                          <>
-                            <span>Mostrar menos</span>
-                            <ChevronUp className="w-3.5 h-3.5" />
-                          </>
-                        ) : (
-                          <>
-                            <span>Ver todas as resoluções ({videoData.videos.length})</span>
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          </>
-                        )}
-                      </button>
+              {/* Informações do Vídeo e Autor */}
+              <div className="min-w-0 flex-1 space-y-3">
+                {/* Perfil do Criador */}
+                <div className="flex items-center gap-3">
+                  {videoData.author?.avatar ? (
+                    <img 
+                      src={videoData.author.avatar} 
+                      alt={videoData.author.nickname} 
+                      className="w-10 h-10 rounded-full object-cover border-2 border-[#00f2fe]/40"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-zinc-400 font-bold">
+                      {videoData.author?.nickname?.[0] || 'T'}
                     </div>
                   )}
+
+                  <div>
+                    <h4 className="font-extrabold text-white text-sm sm:text-base leading-tight">
+                      {videoData.author?.nickname}
+                    </h4>
+                    <p className="text-xs text-[#00f2fe] font-mono font-medium">
+                      {videoData.author?.unique_id}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Legenda do Vídeo */}
+                <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed line-clamp-3">
+                  {videoData.title}
+                </p>
+
+                {/* Estatísticas (Curtidas, Comentários, Views) */}
+                <div className="flex flex-wrap items-center gap-3 pt-1 text-xs text-zinc-400">
+                  {videoData.stats?.likes && (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
+                      <Heart className="w-3.5 h-3.5 text-[#fe2c55]" />
+                      <span className="font-semibold text-zinc-200">{videoData.stats.likes}</span>
+                    </span>
+                  )}
+                  {videoData.stats?.comments && (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
+                      <MessageCircle className="w-3.5 h-3.5 text-sky-400" />
+                      <span className="font-semibold text-zinc-200">{videoData.stats.comments}</span>
+                    </span>
+                  )}
+                  {videoData.stats?.views && (
+                    <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
+                      <Eye className="w-3.5 h-3.5 text-zinc-400" />
+                      <span className="font-semibold text-zinc-200">{videoData.stats.views}</span>
+                    </span>
+                  )}
+                </div>
+
+              </div>
+
+            </div>
+
+            {/* Ações de Download Diretas (Estilo ssstik) */}
+            <div className="p-5 sm:p-6 space-y-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-2">
+                <Download className="w-4 h-4 text-[#00f2fe]" />
+                Escolha a opção de download:
+              </h3>
+
+              <div className="grid grid-cols-1 gap-2.5">
+                {videoData.options.map((option) => {
+                  const isDownloading = downloadingId === option.id;
+                  const isNoWatermarkHD = option.id === 'nowatermark_hd';
+                  const isNoWatermark = option.id === 'nowatermark';
+                  const isAudio = option.id === 'music';
+
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => handleDownloadOption(option)}
+                      disabled={downloadingId !== null}
+                      className={`w-full p-4 rounded-2xl flex items-center justify-between text-left transition-all duration-200 group active:scale-[0.99] cursor-pointer disabled:cursor-not-allowed ${
+                        isNoWatermarkHD
+                          ? 'bg-gradient-to-r from-[#00f2fe]/20 via-[#00f2fe]/10 to-transparent border border-[#00f2fe]/40 hover:border-[#00f2fe] hover:shadow-lg hover:shadow-[#00f2fe]/20 text-white'
+                          : isNoWatermark
+                          ? 'bg-white/[0.04] border border-white/[0.08] hover:border-[#00f2fe]/50 hover:bg-white/[0.07] text-white'
+                          : isAudio
+                          ? 'bg-gradient-to-r from-[#fe2c55]/20 via-[#fe2c55]/10 to-transparent border border-[#fe2c55]/40 hover:border-[#fe2c55] hover:shadow-lg hover:shadow-[#fe2c55]/20 text-white'
+                          : 'bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] text-zinc-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3.5">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                          isNoWatermarkHD || isNoWatermark
+                            ? 'bg-[#00f2fe]/20 text-[#00f2fe]'
+                            : isAudio
+                            ? 'bg-[#fe2c55]/20 text-[#fe2c55]'
+                            : 'bg-zinc-800 text-zinc-400'
+                        }`}>
+                          {isAudio ? (
+                            <Music className="w-5 h-5" />
+                          ) : (
+                            <Film className="w-5 h-5" />
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-sm sm:text-base text-white">
+                              {option.label}
+                            </span>
+                            {isNoWatermarkHD && (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#00f2fe] text-black uppercase tracking-wider">
+                                Recomendado
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-xs text-zinc-400 block mt-0.5">
+                            {option.sublabel} {option.size ? `• ${option.size}` : ''}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex-shrink-0 pl-3">
+                        {isDownloading ? (
+                          <div className="flex items-center gap-2 text-xs font-bold text-[#00f2fe]">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span className="hidden sm:inline">Baixando...</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition-all bg-white/[0.06] group-hover:bg-white/[0.12] text-zinc-200 group-hover:text-white">
+                            <Download className="w-4 h-4" />
+                            <span>Baixar</span>
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Se for carrossel de fotos (slideshow) */}
+              {videoData.images && videoData.images.length > 0 && (
+                <div className="mt-6 pt-5 border-t border-white/[0.08]">
+                  <div className="flex items-center justify-between mb-3.5">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-2">
+                      <ImageIcon className="w-4 h-4 text-[#fe2c55]" />
+                      Fotos do Carrossel ({videoData.images.length})
+                    </h4>
+
+                    {/* Botão Baixar Tudo em ZIP */}
+                    <button
+                      type="button"
+                      onClick={handleDownloadAllImagesZip}
+                      disabled={downloadingId !== null}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#fe2c55]/20 hover:bg-[#fe2c55]/30 border border-[#fe2c55]/40 text-[#fe2c55] hover:text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-40"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      <span>Baixar Todas em ZIP</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {videoData.images.map((imgUrl, idx) => (
+                      <div key={idx} className="relative aspect-square rounded-xl overflow-hidden border border-white/[0.1] bg-black group">
+                        <img src={imgUrl} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadImage(imgUrl, idx)}
+                          className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 text-white text-xs font-bold cursor-pointer"
+                        >
+                          <Download className="w-5 h-5 text-[#00f2fe]" />
+                          <span>Baixar Foto {idx + 1}</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Opções de Áudio (MP3) */}
-              {activeTab === 'audio' && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead>
-                      <tr className="text-[11px] uppercase tracking-wider text-zinc-500 border-b border-white/[0.06] pb-3">
-                        <th className="pb-3.5 font-bold pl-2">Bitrate</th>
-                        <th className="pb-3.5 font-bold">Formato</th>
-                        <th className="pb-3.5 font-bold">Tamanho Est.</th>
-                        <th className="pb-3.5 font-bold text-right pr-2">Download</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/[0.04]">
-                      {videoData.audios.map((item, idx) => {
-                        const itemKey = `audio_${item.bitrate}`;
-                        const isDownloading = downloadingKey === itemKey;
-
-                        return (
-                          <tr key={idx} className="hover:bg-white/[0.02] transition-colors">
-                            <td className="py-3.5 pl-2 font-medium text-white flex items-center gap-2.5">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold tracking-wider bg-red-600/20 text-red-400 border border-red-500/30">
-                                <Music className="w-2.5 h-2.5" />
-                                {item.quality}
-                              </span>
-                              <span className="text-[10px] text-zinc-400 font-medium">
-                                {item.label}
-                              </span>
-                            </td>
-                            <td className="py-3.5 text-xs font-mono text-zinc-400 uppercase font-semibold">
-                              {item.format}
-                            </td>
-                            <td className="py-3.5 text-xs text-zinc-400 font-mono">
-                              {item.size}
-                            </td>
-                            <td className="py-3.5 pr-2 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadItem(item, 'audio')}
-                                disabled={downloadingKey !== null}
-                                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#E50914] hover:bg-[#f6121d] disabled:opacity-40 text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-[#E50914]/20 active:scale-95 cursor-pointer disabled:cursor-not-allowed"
-                              >
-                                {isDownloading ? (
-                                  <>
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Processando...</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Download className="w-3.5 h-3.5" />
-                                    <span>Baixar MP3</span>
-                                  </>
-                                )}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </div>
 
           </div>
         )}
 
+        {/* HISTÓRICO DE DOWNLOADS RECENTES */}
+        {recentHistory.length > 0 && (
+          <section className="w-full max-w-2xl mb-12">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-extrabold text-white flex items-center gap-2">
+                <History className="w-4 h-4 text-[#00f2fe]" />
+                Recentes Analisados
+              </h3>
+              <button
+                type="button"
+                onClick={handleClearHistory}
+                className="text-xs text-zinc-500 hover:text-red-400 flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Limpar histórico</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {recentHistory.map((item, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => handleFetchInfo(null, item.url)}
+                  className="p-3 bg-[#12141c] hover:bg-[#181a24] border border-white/[0.06] hover:border-[#00f2fe]/40 rounded-2xl flex items-center gap-3 transition-all cursor-pointer group"
+                >
+                  {item.cover ? (
+                    <img 
+                      src={item.cover} 
+                      alt={item.title} 
+                      className="w-12 h-16 rounded-xl object-cover bg-black flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="w-12 h-16 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-500">
+                      <Film className="w-5 h-5" />
+                    </div>
+                  )}
+
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold text-white line-clamp-1 group-hover:text-[#00f2fe] transition-colors">
+                      {item.title}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 font-mono mt-0.5">
+                      {item.unique_id}
+                    </p>
+                  </div>
+
+                  <ArrowRight className="w-4 h-4 text-zinc-600 group-hover:text-[#00f2fe] group-hover:translate-x-1 transition-all flex-shrink-0" />
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Guia Rápido: Como usar (Passo a Passo estilo ssstik) */}
+        <section className="w-full max-w-2xl mb-12">
+          <h3 className="text-center font-extrabold text-xl text-white mb-6">
+            Como baixar vídeos do TikTok sem marca d'água?
+          </h3>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="p-5 rounded-2xl bg-[#12141c] border border-white/[0.06] flex flex-col items-center text-center space-y-2">
+              <div className="w-10 h-10 rounded-xl bg-[#00f2fe]/10 border border-[#00f2fe]/30 flex items-center justify-center text-[#00f2fe] font-black text-sm">
+                1
+              </div>
+              <h4 className="font-bold text-sm text-white">Copie o link</h4>
+              <p className="text-xs text-zinc-400">
+                Abra o TikTok, clique no botão <strong>Compartilhar</strong> do vídeo e escolha <strong>Copiar Link</strong>.
+              </p>
+            </div>
+
+            <div className="p-5 rounded-2xl bg-[#12141c] border border-white/[0.06] flex flex-col items-center text-center space-y-2">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-r from-[#00f2fe]/15 to-[#fe2c55]/15 border border-white/10 flex items-center justify-center text-white font-black text-sm">
+                2
+              </div>
+              <h4 className="font-bold text-sm text-white">Cole o link</h4>
+              <p className="text-xs text-zinc-400">
+                Cole a URL no campo de busca acima e clique no botão <strong>Baixar</strong>.
+              </p>
+            </div>
+
+            <div className="p-5 rounded-2xl bg-[#12141c] border border-white/[0.06] flex flex-col items-center text-center space-y-2">
+              <div className="w-10 h-10 rounded-xl bg-[#fe2c55]/10 border border-[#fe2c55]/30 flex items-center justify-center text-[#fe2c55] font-black text-sm">
+                3
+              </div>
+              <h4 className="font-bold text-sm text-white">Baixe em HD</h4>
+              <p className="text-xs text-zinc-400">
+                Escolha a opção <strong>Sem Marca d'Água (HD)</strong> ou <strong>Áudio (MP3)</strong> para salvar no aparelho.
+              </p>
+            </div>
+          </div>
+        </section>
+
       </main>
 
-      {/* Footer Minimalista */}
-      <footer className="border-t border-white/[0.06] py-8 text-center text-xs text-zinc-600">
+      {/* Modal de Prévia do Vídeo */}
+      {showPreviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="relative max-w-sm w-full bg-[#12141c] rounded-3xl overflow-hidden border border-white/10 shadow-2xl flex flex-col items-center">
+            
+            {/* Header do Modal */}
+            <div className="w-full px-5 py-3.5 flex items-center justify-between border-b border-white/[0.08] bg-[#181a24]">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Play className="w-3.5 h-3.5 text-[#00f2fe] fill-current" />
+                Prévia Sem Marca d'Água
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPreviewModal(false)}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-white/[0.08] transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Vídeo Player */}
+            <div className="p-3 w-full flex items-center justify-center bg-black">
+              <video 
+                src={previewVideoUrl} 
+                controls 
+                autoPlay 
+                className="max-h-[65vh] w-auto rounded-2xl shadow-lg"
+              />
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="w-full p-4 border-t border-white/[0.08] bg-[#181a24] flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowPreviewModal(false)}
+                className="px-5 py-2 rounded-xl bg-white/[0.08] hover:bg-white/[0.14] text-xs font-bold text-white transition-all cursor-pointer"
+              >
+                Fechar Prévia
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <footer className="border-t border-white/[0.06] py-8 text-center text-xs text-zinc-600 bg-[#090a0f]">
         <div className="max-w-4xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-zinc-500">
-            <span className="font-extrabold text-zinc-300">STREAM<span className="text-[#E50914]">DOWN</span></span>
-            <span>&bull; Processamento em alta definição</span>
+            <span className="font-extrabold text-zinc-300">TIK<span className="text-[#00f2fe]">DOWN</span></span>
+            <span>&bull; Baixador de Vídeos do TikTok Sem Marca d'Água</span>
           </div>
           <p className="text-zinc-600 text-[11px]">
-            Desenvolvido para uso pessoal e educacional &bull; 2026
+            Não somos afiliados ao TikTok ou ByteDance &bull; 2026
           </p>
         </div>
       </footer>

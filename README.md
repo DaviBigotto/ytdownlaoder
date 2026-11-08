@@ -1,8 +1,17 @@
-# 🎬 STREAMDOWN — YouTube Ultra Downloader
+# 🎵 TIKDOWN — TikTok Video Downloader Sem Marca d'Água
 
-Aplicação Full-Stack moderna para download de vídeos e extração de áudio do YouTube em alta qualidade (**4K UHD, 2K, 1080p FHD, 720p HD e MP3 até 320 kbps**).
+Aplicação Full-Stack moderna e de alta velocidade para download de vídeos do TikTok **sem marca d'água em Alta Definição (HD)**, versão original e extração de áudio/música (**MP3**) das trends. Inspirado no **ssstik.io**.
 
-Inspirado na estética cinematográfica de serviços de streaming premium (Netflix), com design dark mode refinado, tabela dinâmica de resoluções com estimativa de tamanho de arquivo e integração direta com **yt-dlp** e **FFmpeg**.
+---
+
+## ✨ Recursos
+
+- 🟢 **Sem Marca d'Água (HD)**: Extração direta do stream original do TikTok sem o logo saltitante.
+- 🎵 **Áudio / Som Original (MP3)**: Baixe a música ou efeito sonoro da trend em alta fidelidade.
+- 📸 **Carrossel de Fotos**: Suporte completo para baixar posts de slides/fotos do TikTok.
+- ⚡ **Download Instantâneo**: Arquivos leves (5 a 30 MB) entregues com barra de progresso em tempo real.
+- 📋 **Botão de Colar Inteligente**: Integração com a área de transferência com um clique.
+- 🛡️ **Zero Burocracia**: Sem necessidade de cookies, sem bloqueios de cipher ou login.
 
 ---
 
@@ -10,56 +19,23 @@ Inspirado na estética cinematográfica de serviços de streaming premium (Netfl
 
 ### Frontend
 - **React 18** + **Vite** (Build ultra-rápido com HMR)
-- **Tailwind CSS** (Design system cinematográfico e responsivo)
-- **Lucide React** (Ícones modernos e consistentes)
+- **Tailwind CSS** (Design neon dark mode com paleta característica do TikTok)
+- **Lucide React** (Ícones modernos)
 - **Google Fonts** (Plus Jakarta Sans)
 
 ### Backend
 - **Python 3.12** + **Flask** (API REST rápida e leve)
-- **Flask-CORS** (Comunicação segura entre frontend e backend)
-- **yt-dlp** (Motor avançado de extração de mídias e bypass de proteções)
-- **FFmpeg** (Fusão de áudio e vídeo de alta fidelidade sem re-encoding pesado)
-
----
-
-## 📁 Arquitetura do Projeto
-
-```text
-YTdownloader/
-├── backend/
-│   ├── downloads/              # Armazenamento temporário com auto-cleanup
-│   ├── app.py                  # Servidor Flask com endpoints /info e /download
-│   ├── requirements.txt        # Dependências Python (Flask, Flask-CORS, yt-dlp)
-│   └── .gitkeep
-├── frontend/
-│   ├── public/                 # Assets estáticos e logo oficial
-│   ├── src/
-│   │   ├── components/         # Componentes reutilizáveis (Button, Input)
-│   │   ├── App.jsx             # Interface cinematográfica principal
-│   │   ├── index.css           # Iluminação ambiente e diretivas Tailwind
-│   │   └── main.jsx            # Ponto de entrada do React
-│   ├── package.json            # Dependências e scripts do React/Vite
-│   ├── tailwind.config.js      # Paleta de cores Netflix e tema customizado
-│   └── vite.config.js          # Configuração do Vite com proxy
-└── .gitignore                  # Proteção de venv, node_modules, cookies e temporários
-```
+- **Requests + Streaming** (Download em tempo real com chunk-streaming)
+- **TikWM Engine & yt-dlp Contingency** (Arquitetura resiliente de extração)
 
 ---
 
 ## 🛠️ Como Executar Localmente
 
-### 1. Pré-requisitos
-- [Node.js](https://nodejs.org/) (v18+)
-- [Python 3.10+](https://www.python.org/)
-- [FFmpeg](https://ffmpeg.org/) instalado no sistema
-
-### 2. Backend (Flask)
+### 1. Backend (Flask)
 ```bash
 # Entre na pasta backend
 cd backend
-
-# Crie e ative o ambiente virtual
-python -m venv venv
 
 # No Windows (PowerShell):
 .\venv\Scripts\Activate.ps1
@@ -74,14 +50,11 @@ python app.py
 ```
 > O servidor iniciará em `http://localhost:5000`.
 
-### 3. Frontend (React + Vite)
+### 2. Frontend (React + Vite)
 Em outro terminal:
 ```bash
 # Entre na pasta frontend
 cd frontend
-
-# Instale os pacotes
-npm install
 
 # Inicie o servidor de desenvolvimento
 npm run dev
@@ -91,4 +64,4 @@ npm run dev
 ---
 
 ## 📄 Licença
-Distribuído sob a licença MIT. Desenvolvido para fins educacionais e de estudo.
+Distribuído sob a licença MIT. Desenvolvido para fins educacionais e de estudo. Não afiliado ao TikTok ou ByteDance.
