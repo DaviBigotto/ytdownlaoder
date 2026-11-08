@@ -25,6 +25,8 @@ import {
   History,
   Trash2
 } from 'lucide-react';
+import AdBanner from './components/AdBanner';
+import { AD_CONFIG } from './adConfig';
 
 const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
@@ -517,7 +519,7 @@ export default function App() {
         </div>
 
         {/* Input Bar Estilo Moderno */}
-        <form onSubmit={handleFetchInfo} className="w-full max-w-2xl mb-8 group">
+        <form onSubmit={handleFetchInfo} className="w-full max-w-2xl mb-4 group">
           <div className="relative flex flex-col sm:flex-row gap-2.5 p-2 bg-[#12141c] rounded-2xl border border-white/[0.1] shadow-2xl shadow-black/80 focus-within:border-[#00f2fe]/60 focus-within:shadow-[0_0_35px_-5px_rgba(0,242,254,0.25)] transition-all duration-300">
             
             <div className="relative flex-1 flex items-center">
@@ -667,6 +669,16 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Banner de Anúncio Adsterra 300x250 (quando na tela inicial sem busca) */}
+        {!videoData && (
+          <AdBanner 
+            adKey={AD_CONFIG.BANNER_300x250_KEY} 
+            invokeSrc={AD_CONFIG.BANNER_300x250_SRC} 
+            width={300} 
+            height={250} 
+          />
         )}
 
         {/* CARD DO VÍDEO DO TIKTOK COM OPÇÕES DIRETAS (ESTILO SSSTIK / TIKWM) */}
@@ -888,6 +900,16 @@ export default function App() {
             </div>
 
           </div>
+        )}
+
+        {/* Banner de Anúncio Adsterra 300x250 (abaixo do card de resultados do vídeo) */}
+        {videoData && (
+          <AdBanner 
+            adKey={AD_CONFIG.BANNER_300x250_KEY} 
+            invokeSrc={AD_CONFIG.BANNER_300x250_SRC} 
+            width={300} 
+            height={250} 
+          />
         )}
 
         {/* HISTÓRICO DE DOWNLOADS RECENTES */}
